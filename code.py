@@ -19,12 +19,58 @@ with st.sidebar:
     password = st.text_input("Mot de passe", value="XXXXXX", type="password")
     
     st.header("⚙️ Paramètres de recherche")
-    query = st.text_input("Requête (Filtre)", value="DTS_SUBDOM:MNE AND YEAR:[2010 TO 2025]")
+    
+    # --- NOUVEAUX FILTRES INTERACTIFS ---
+    st.subheader("🔍 Filtres rapides")
+    
+    type_doc = st.selectbox(
+        "Type de document",
+        options=[
+            "Mesures nationales d'exécution (MNE)", 
+            "Législation européenne", 
+            "Jurisprudence", 
+            "Travaux préparatoires",
+            "Tous les documents"
+        ]
+    )
+    
+    annee_min, annee_max = st.slider(
+        "Période (Années)",
+        min_value=1950, 
+        max_value=2026, 
+        value=(2010, 2026)
+    )
+    
+    # Construction automatique de la requête en fonction des choix
+    domaine_query = ""
+    if type_doc == "Mesures nationales d'exécution (MNE)":
+        domaine_query = "DTS_SUBDOM:MNE"
+    elif type_doc == "Législation européenne":
+        domaine_query = "DTS_DOM:EU_LAW"
+    elif type_doc == "Jurisprudence":
+        domaine_query = "DTS_DOM:EU_CASE_LAW"
+    elif type_doc == "Travaux préparatoires":
+        domaine_query = "DTS_DOM:PREP_ACTS"
+        
+    annee_query = f"YEAR:[{annee_min} TO {annee_max}]"
+    
+    if domaine_query:
+        requete_generee = f"{domaine_query} AND {annee_query}"
+    else:
+        requete_generee = annee_query
+
+    st.markdown("---")
+    st.subheader("🛠️ Requête experte")
+    st.caption("Générée automatiquement par les filtres, modifiable manuellement :")
+    
+    # Le champ text_input prend la requête générée par défaut
+    query = st.text_input("Requête (Filtre final)", value=requete_generee)
     metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX,TITLE,COUNTRY")
     
+    st.markdown("---")
     st.header("⏱️ Pagination & Limites")
     rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=5)
-    max_requests = st.number_input("Nombre de requêtes", min_value=1, max_value=2000, value=1000)
+    max_requests = st.number_input("Nombre de requêtes", min_value=1, max_value=2000, value=100)
     delay = st.slider("Délai entre requêtes (secondes)", min_value=0, max_value=15, value=5)
 
 URL = "https://eur-lex.europa.eu/EURLexWebService"
