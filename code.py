@@ -20,7 +20,7 @@ with st.sidebar:
     
     st.header("⚙️ Paramètres de recherche")
     
-    # --- NOUVEAUX FILTRES INTERACTIFS ---
+    # --- FILTRES INTERACTIFS ---
     st.subheader("🔍 Filtres rapides")
     
     type_doc = st.selectbox(
@@ -41,7 +41,7 @@ with st.sidebar:
         value=(2010, 2026)
     )
     
-    # Construction automatique de la requête en fonction des choix
+    # Construction automatique de la requête
     domaine_query = ""
     if type_doc == "Mesures nationales d'exécution (MNE)":
         domaine_query = "DTS_SUBDOM:MNE"
@@ -63,7 +63,6 @@ with st.sidebar:
     st.subheader("🛠️ Requête experte")
     st.caption("Générée automatiquement par les filtres, modifiable manuellement :")
     
-    # Le champ text_input prend la requête générée par défaut
     query = st.text_input("Requête (Filtre final)", value=requete_generee)
     metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX,TITLE,COUNTRY")
     
@@ -77,6 +76,7 @@ URL = "https://eur-lex.europa.eu/EURLexWebService"
 
 # --- FONCTION POUR ENVOYER UNE REQUÊTE SOAP ---
 def send_soap_request(start, log_container, retry_count=0):
+    # L'ajout de <![CDATA[ ... ]]> protège les caractères spéciaux de la requête
     soap_query = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope
    xmlns:soapenv="http://www.w3.org/2003/05/soap-envelope"
@@ -84,7 +84,7 @@ def send_soap_request(start, log_container, retry_count=0):
    <soapenv:Header/>
    <soapenv:Body>
       <eur:searchRequest>
-         <eur:query>{query}</eur:query>
+         <eur:query><![CDATA[{query}]]></eur:query>
          <eur:metadata>{metadata}</eur:metadata>
          <eur:start>{start}</eur:start>
          <eur:rows>{rows_per_request}</eur:rows>
@@ -131,16 +131,13 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
     else:
         all_documents = []
         
-        # Éléments d'interface pour le suivi
         progress_bar = st.progress(0)
         status_text = st.empty()
         log_container = st.container()
         
-        # Estimation du temps
         estimated_time = max_requests * delay
         st.info(f"Temps estimé pour {max_requests} requêtes : ~{estimated_time // 60} minutes et {estimated_time % 60} secondes.")
 
-        # Boucle de requêtes
         for i in range(max_requests):
             start = i * rows_per_request
             status_text.text(f"🔍 Requête {i + 1}/{max_requests} en cours (Documents {start + 1} à {start + rows_per_request})...")
@@ -148,7 +145,7 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
             response = send_soap_request(start, log_container)
             
             if response is None:
-                log_container.error(f"❌ Échec définitif de la requête {i + 1}.")
+                log_container.error(f"❌ Échec de la requête {i + 1}.")
                 continue
 
             try:
@@ -157,7 +154,7 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
                 documents = root.findall('.//ns:document', ns) or root.findall('.//document')
 
                 if not documents:
-                    log_container.warning(f"⚠️ Fin des résultats atteinte à la requête {i + 1}.")
+                    log_container.warning(f"⚠️ Fin des résultats atteinte ou aucune donnée trouvée (Requête {i + 1}).")
                     break
 
                 for doc in documents:
@@ -175,12 +172,15 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
                 
             except ET.ParseError as e:
                 log_container.error(f"⚠️ Erreur de parsing XML pour la requête {i + 1}: {e}")
-                continue
+                log_container.info("Le serveur a renvoyé une réponse inattendue (probablement une page HTML d'erreur).")
+                
+                # Affiche le contenu brut pour que vous puissiez lire le vrai message d'erreur d'EUR-Lex
+                with log_container.expander(f"🔍 Voir la réponse brute du serveur (Requête {i + 1})"):
+                    st.text(response.decode('utf-8', errors='replace')[:2000])
+                break # On arrête la boucle si le serveur renvoie n'importe quoi
 
-            # Mise à jour de la barre de progression
             progress_bar.progress((i + 1) / max_requests)
 
-            # Pause si ce n'est pas la dernière requête
             if i < max_requests - 1:
                 time.sleep(delay)
 
@@ -190,18 +190,15 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
         if all_documents:
             st.success(f"🎉 Succès ! {len(all_documents)} documents récupérés au total.")
             
-            # Affichage d'un aperçu
             df = pd.DataFrame(all_documents)
             st.write("### Aperçu des données :")
             st.dataframe(df.head(10))
             
-            # Création du fichier Excel en mémoire (BytesIO) pour Streamlit
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='EURLex_Data')
             processed_data = output.getvalue()
             
-            # Bouton de téléchargement
             st.download_button(
                 label="📥 Télécharger les résultats en Excel",
                 data=processed_data,
@@ -209,4 +206,4 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.error("❌ Aucune donnée n'a été récupérée. Vérifiez votre requête ou vos identifiants.")
+            st.error("❌ Aucune donnée n'a été récupérée.")
