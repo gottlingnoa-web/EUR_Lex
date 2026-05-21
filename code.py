@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-from requests.auth import HTTPBasicAuth
 import pandas as pd
 from xml.etree import ElementTree as ET
 import time
@@ -10,7 +9,7 @@ import io
 st.set_page_config(page_title="EUR-Lex Extractor", page_icon="🇪🇺", layout="wide")
 
 st.title("🇪🇺 Extracteur de Documents EUR-Lex")
-st.markdown("Interface d'extraction des métadonnées du webservice SOAP d'EUR-Lex.")
+st.markdown("Interface d'extraction respectant le standard WS-Security d'EUR-Lex.")
 
 # --- BARRE LATÉRALE : PARAMÈTRES ---
 with st.sidebar:
@@ -19,179 +18,142 @@ with st.sidebar:
     password = st.text_input("Mot de passe", value="XXXXXX", type="password")
     
     st.header("⚙️ Paramètres de recherche")
+    query = st.text_input("Requête (Filtre)", value="DTS_SUBDOM:MNE AND YEAR:[2010 TO 2025]")
+    metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX, TITLE, COUNTRY")
     
-    # --- FILTRES INTERACTIFS ---
-    st.subheader("🔍 Filtres rapides")
-    
-    type_doc = st.selectbox(
-        "Type de document",
-        options=[
-            "Mesures nationales d'exécution (MNE)", 
-            "Législation européenne", 
-            "Jurisprudence", 
-            "Travaux préparatoires",
-            "Tous les documents"
-        ]
-    )
-    
-    annee_min, annee_max = st.slider(
-        "Période (Années)",
-        min_value=1950, 
-        max_value=2026, 
-        value=(2010, 2026)
-    )
-    
-    # Construction automatique de la requête
-    domaine_query = ""
-    if type_doc == "Mesures nationales d'exécution (MNE)":
-        domaine_query = "DTS_SUBDOM:MNE"
-    elif type_doc == "Législation européenne":
-        domaine_query = "DTS_DOM:EU_LAW"
-    elif type_doc == "Jurisprudence":
-        domaine_query = "DTS_DOM:EU_CASE_LAW"
-    elif type_doc == "Travaux préparatoires":
-        domaine_query = "DTS_DOM:PREP_ACTS"
-        
-    annee_query = f"YEAR:[{annee_min} TO {annee_max}]"
-    
-    if domaine_query:
-        requete_generee = f"{domaine_query} AND {annee_query}"
-    else:
-        requete_generee = annee_query
-
-    st.markdown("---")
-    st.subheader("🛠️ Requête experte")
-    st.caption("Générée automatiquement par les filtres, modifiable manuellement :")
-    
-    query = st.text_input("Requête (Filtre final)", value=requete_generee)
-    metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX,TITLE,COUNTRY")
-    
-    st.markdown("---")
     st.header("⏱️ Pagination & Limites")
     rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=5)
-    max_requests = st.number_input("Nombre de requêtes", min_value=1, max_value=2000, value=100)
+    max_requests = st.number_input("Nombre de requêtes maximum", min_value=1, max_value=2000, value=1000)
     delay = st.slider("Délai entre requêtes (secondes)", min_value=0, max_value=15, value=5)
 
 URL = "https://eur-lex.europa.eu/EURLexWebService"
 
-# --- FONCTION POUR ENVOYER UNE REQUÊTE SOAP ---
-def send_soap_request(start, log_container, retry_count=0):
-    # L'ajout de <![CDATA[ ... ]]> protège les caractères spéciaux de la requête
+# --- FONCTION POUR ENVOYER UNE REQUÊTE SOAP VALIDE ---
+def send_soap_request(page, log_container):
+    # Pour récupérer les métadonnées spécifiques sur EUR-Lex, la syntaxe exige un "SELECT ... WHERE ..."
+    full_expert_query = query
+    
+    # Enveloppe SOAP stricte respectant WS-Security et le format de recherche EUR-Lex
     soap_query = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope
-   xmlns:soapenv="http://www.w3.org/2003/05/soap-envelope"
-   xmlns:eur="http://eur-lex.europa.eu/">
-   <soapenv:Header/>
-   <soapenv:Body>
-      <eur:searchRequest>
-         <eur:query><![CDATA[{query}]]></eur:query>
-         <eur:metadata>{metadata}</eur:metadata>
-         <eur:start>{start}</eur:start>
-         <eur:rows>{rows_per_request}</eur:rows>
-      </eur:searchRequest>
-   </soapenv:Body>
-</soapenv:Envelope>"""
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sear="http://eur-lex.europa.eu/search">
+   <soap:Header>
+      <wsse:Security soap:mustUnderstand="true" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+         <wsse:UsernameToken wsu:Id="UsernameToken-1" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+            <wsse:Username>{username}</wsse:Username>
+            <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{password}</wsse:Password>
+         </wsse:UsernameToken>
+      </wsse:Security>
+   </soap:Header>
+   <soap:Body>
+        <sear:searchRequest>
+            <sear:expertQuery><![CDATA[{full_expert_query}]]></sear:expertQuery>
+            <sear:page>{page}</sear:page>
+            <sear:pageSize>{rows_per_request}</sear:pageSize>
+            <sear:searchLanguage>fr</sear:searchLanguage>
+            <sear:searchProfile>STANDARD</sear:searchProfile> 
+        </sear:searchRequest>
+   </soap:Body>
+</soap:Envelope>"""
 
+    # L'API SOAP 1.2 exige un Content-Type 'application/soap+xml'
     headers = {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': '',
-        'Accept': 'text/xml'
+        'Content-Type': 'application/soap+xml; charset=utf-8'
     }
 
     try:
-        response = requests.post(
-            URL,
-            data=soap_query.encode('utf-8'),
-            headers=headers,
-            auth=HTTPBasicAuth(username, password),
-            timeout=60
-        )
-
-        if response.status_code == 200:
-            return response.content
-        elif response.status_code == 415:
-            log_container.error(f"⚠️ Erreur 415 (Unsupported Media Type) pour la requête {start}.")
-            return None
-        elif response.status_code == 202 and retry_count < 3:
-            log_container.warning(f"⏳ Requête {start} : 202 Accepted. Réessai {retry_count + 1}/3 dans 10 secondes...")
-            time.sleep(10)
-            return send_soap_request(start, log_container, retry_count + 1)
-        else:
-            log_container.error(f"⚠️ Erreur HTTP {response.status_code} pour la requête {start}.")
-            return None
-
+        # Note : On retire HTTPBasicAuth() car l'authentification est désormais dans le Header XML
+        response = requests.post(URL, data=soap_query.encode('utf-8'), headers=headers, timeout=60)
+        return response
     except requests.exceptions.RequestException as e:
-        log_container.error(f"⚠️ Erreur de connexion pour la requête {start}: {e}")
+        log_container.error(f"⚠️ Erreur de connexion au serveur : {e}")
         return None
 
 # --- BOUTON DE LANCEMENT ---
 if st.button("🚀 Lancer l'extraction", type="primary"):
     if username == "XXXXXX" or password == "XXXXXX" or not username or not password:
-        st.warning("⚠️ Veuillez entrer vos identifiants EUR-Lex valides dans la barre latérale avant de lancer l'extraction.")
+        st.warning("⚠️ Veuillez entrer vos identifiants EUR-Lex valides dans la barre latérale.")
     else:
         all_documents = []
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
         log_container = st.container()
-        
-        estimated_time = max_requests * delay
-        st.info(f"Temps estimé pour {max_requests} requêtes : ~{estimated_time // 60} minutes et {estimated_time % 60} secondes.")
 
+        # Boucle de requêtes (EUR-Lex utilise des numéros de pages, pas des index de départ)
         for i in range(max_requests):
-            start = i * rows_per_request
-            status_text.text(f"🔍 Requête {i + 1}/{max_requests} en cours (Documents {start + 1} à {start + rows_per_request})...")
+            page = i + 1 
+            status_text.text(f"🔍 Requête {page}/{max_requests} en cours...")
             
-            response = send_soap_request(start, log_container)
+            response = send_soap_request(page, log_container)
             
             if response is None:
-                log_container.error(f"❌ Échec de la requête {i + 1}.")
-                continue
+                break # Erreur réseau, on arrête la boucle
+                
+            # Vérification rigoureuse de la réponse HTTP
+            if response.status_code != 200:
+                log_container.error(f"❌ Échec critique. EUR-Lex a renvoyé l'erreur HTTP {response.status_code}.")
+                with log_container.expander("Voir le contenu renvoyé par EUR-Lex (pour débogage)"):
+                    st.code(response.text[:2000])
+                break # On arrête immédiatement pour ne pas générer 100 fois la même erreur
 
             try:
-                root = ET.fromstring(response)
-                ns = {'ns': 'http://eur-lex.europa.eu/'}
-                documents = root.findall('.//ns:document', ns) or root.findall('.//document')
-
+                # Parsing XML
+                root = ET.fromstring(response.content)
+                
+                # Recherche des balises de documents 
+                documents = root.findall('.//document') or root.findall('.//*[local-name()="document"]') or root.findall('.//*[local-name()="result"]')
+                
                 if not documents:
-                    log_container.warning(f"⚠️ Fin des résultats atteinte ou aucune donnée trouvée (Requête {i + 1}).")
+                    log_container.warning(f"⚠️ Fin de la pagination atteinte à la page {page} ou aucun document trouvé.")
                     break
 
+                # 💡 AJOUT CRUCIAL : Afficher la structure du premier document lors de la première requête
+                if i == 0 and len(documents) > 0:
+                    with log_container.expander("🔍 Voir le XML brut du premier document (pour trouver les bons noms de balises)"):
+                        # Convertir l'élément XML en chaîne lisible
+                        xml_str = ET.tostring(documents[0], encoding='unicode')
+                        st.code(xml_str, language='xml')
+
                 for doc in documents:
-                    celex = doc.find('ns:CELEX', ns) or doc.find('CELEX')
-                    title = doc.find('ns:TITLE', ns) or doc.find('TITLE')
-                    country = doc.find('ns:COUNTRY', ns) or doc.find('COUNTRY')
+                    # 💡 MODIFICATION : Recherche plus large incluant les standards EUR-Lex habituels
+                    # ID_CELEX est le nom standard dans l'ontologie EUR-Lex
+                    celex = doc.find('.//*[local-name()="ID_CELEX"]') 
+                    if celex is None: 
+                        celex = doc.find('.//*[local-name()="CELEX"]')
+
+                    # Le titre est souvent imbriqué dans VALUE à l'intérieur de EXPRESSION_TITLE
+                    title_node = doc.find('.//*[local-name()="EXPRESSION_TITLE"]//*[local-name()="VALUE"]')
+                    if title_node is None:
+                        title_node = doc.find('.//*[local-name()="TITLE"]')
+                        
+                    # Pays ou auteur (souvent WORK_IS_CREATED_BY_AGENT)
+                    country_node = doc.find('.//*[local-name()="COUNTRY"]') 
 
                     all_documents.append({
                         'CELEX': celex.text if celex is not None else 'N/A',
-                        'Titre': title.text if title is not None else 'N/A',
-                        'Pays': country.text if country is not None else 'N/A'
+                        'Titre': title_node.text if title_node is not None else 'N/A',
+                        'Pays': country_node.text if country_node is not None else 'N/A'
                     })
 
-                log_container.success(f"✅ Requête {i + 1} : {len(documents)} documents récupérés.")
+                log_container.success(f"✅ Page {page} : documents récupérés.")
                 
             except ET.ParseError as e:
-                log_container.error(f"⚠️ Erreur de parsing XML pour la requête {i + 1}: {e}")
-                log_container.info("Le serveur a renvoyé une réponse inattendue (probablement une page HTML d'erreur).")
-                
-                # Affiche le contenu brut pour que vous puissiez lire le vrai message d'erreur d'EUR-Lex
-                with log_container.expander(f"🔍 Voir la réponse brute du serveur (Requête {i + 1})"):
-                    st.text(response.decode('utf-8', errors='replace')[:2000])
-                break # On arrête la boucle si le serveur renvoie n'importe quoi
+                log_container.error(f"⚠️ EUR-Lex n'a pas renvoyé de XML valide à la page {page}.")
+                with log_container.expander("Voir ce qu'EUR-Lex a réellement renvoyé (HTML/Erreur)"):
+                    st.code(response.text[:2000])
+                break 
 
             progress_bar.progress((i + 1) / max_requests)
 
             if i < max_requests - 1:
                 time.sleep(delay)
 
-        # --- FINALISATION ET EXPORT ---
-        status_text.text("✨ Extraction terminée !")
+        # --- EXPORT ---
+        status_text.text("✨ Processus terminé !")
         
         if all_documents:
             st.success(f"🎉 Succès ! {len(all_documents)} documents récupérés au total.")
             
             df = pd.DataFrame(all_documents)
-            st.write("### Aperçu des données :")
             st.dataframe(df.head(10))
             
             output = io.BytesIO()
@@ -202,8 +164,8 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
             st.download_button(
                 label="📥 Télécharger les résultats en Excel",
                 data=processed_data,
-                file_name=f"eurlex_{len(all_documents)}_documents.xlsx",
+                file_name=f"eurlex_resultats.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.error("❌ Aucune donnée n'a été récupérée.")
+            st.error("❌ Aucune donnée n'a été récupérée. Vérifiez votre requête ou vos droits d'accès au WebService.")
