@@ -3,13 +3,12 @@ import requests
 import pandas as pd
 from xml.etree import ElementTree as ET
 import time
-import io
 
 # --- CONFIGURATION DE L'INTERFACE STREAMLIT ---
 st.set_page_config(page_title="EUR-Lex Extractor Pro", page_icon="🇪🇺", layout="wide")
 
 st.title("🇪🇺 Extracteur EUR-Lex Interactif")
-st.markdown("Extraction sécurisée avec sauvegarde en temps réel et sélection de métadonnées.")
+st.markdown("Extraction sécurisée avec lecture XML profonde (Deep Parse).")
 
 # --- DICTIONNAIRES DE CONFIGURATION ---
 DOC_TYPES = {
@@ -21,14 +20,15 @@ DOC_TYPES = {
     "Jurisprudence": "EU_CASE_LAW"
 }
 
-METADATA_MAPPING = {
-    "CELEX (Identifiant)": "ID_CELEX",
-    "Titre du document": "EXPRESSION_TITLE",
-    "Date du document": "DATE_DOCUMENT",
-    "Type de document": "TYPE_OF_DOCUMENT",
-    "Auteur / Pays": "WORK_IS_CREATED_BY_AGENT",
-    "Numéro du document": "DOC_NUM",
-    "Date de publication (JO)": "DATE_PUBLICATION"
+# NOUVEAU : Un dictionnaire avec des listes de balises alternatives (Plans A, B, C...)
+METADATA_FALLBACKS = {
+    "CELEX (Identifiant)": ["ID_CELEX", "CELEX"],
+    "Titre du document": ["EXPRESSION_TITLE", "TITLE", "TITLE_OF_DOCUMENT"],
+    "Date du document": ["DATE_DOCUMENT", "DATE"],
+    "Type de document": ["TYPE_OF_DOCUMENT", "FM_CODED", "ACT_TYPE"],
+    "Auteur / Pays": ["WORK_IS_CREATED_BY_AGENT", "COUNTRY", "AUTHOR"],
+    "Numéro du document": ["DOC_NUM", "DOCUMENT_NUMBER"],
+    "Date de publication (JO)": ["DATE_PUBLICATION", "PUBLICATION_DATE"]
 }
 
 # --- INITIALISATION DE LA MÉMOIRE (SESSION STATE) ---
@@ -52,7 +52,7 @@ with st.sidebar:
         doc_type = st.selectbox("Type d'acte :", list(DOC_TYPES.keys()))
         annee = st.text_input("Année (ex: 2023) :", max_chars=4)
         
-        query_parts = ["DTS_SUBDOM=LEGISLATION"] # Base par défaut
+        query_parts = ["DTS_SUBDOM=LEGISLATION"] 
         if txt_integral: query_parts.append(f'TE~"{txt_integral.strip()}"')
         if DOC_TYPES[doc_type]: query_parts.append(f'FM_CODED={DOC_TYPES[doc_type]}')
         if annee: query_parts.append(f'DD_YEAR={annee}')
@@ -64,9 +64,9 @@ with st.sidebar:
         
     st.header("📊 Métadonnées à extraire")
     selected_metadata = st.multiselect(
-        "Colonnes du futur Excel :",
-        list(METADATA_MAPPING.keys()),
-        default=["CELEX (Identifiant)", "Titre du document", "Date du document"]
+        "Colonnes du futur fichier :",
+        list(METADATA_FALLBACKS.keys()),
+        default=["CELEX (Identifiant)", "Titre du document", "Date du document", "Auteur / Pays"]
     )
     
     st.header("⏱️ Pagination & Limites")
@@ -105,12 +105,17 @@ def send_soap_request(page, safe_query, log_container):
         log_container.error(f"⚠️ Erreur de connexion : {e}")
         return None
 
-# Fonction pour chercher les balises sans se soucier des espaces de noms (namespaces)
-def find_anywhere(parent_node, tag_name):
-    for elem in parent_node.iter():
-        if elem.tag == tag_name or elem.tag.endswith(f'}}[{tag_name}]') or elem.tag.endswith(f'}}{tag_name}'):
-            return elem
-    return None
+# NOUVELLE FONCTION XML ULTIME : Ignore les namespaces ET gère les sous-balises imbriquées
+def get_xml_value(parent_node, tag_names):
+    for tag in tag_names:
+        for elem in parent_node.iter():
+            # elem.tag.split('}')[-1] retire automatiquement la pollution des URLs namespaces
+            if elem.tag.split('}')[-1] == tag:
+                # itertext() fusionne tout le texte, même s'il est caché dans des sous-balises
+                text_content = "".join(elem.itertext()).strip()
+                if text_content:
+                    return text_content
+    return "Non renseigné" # Si le document ne contient vraiment pas l'info
 
 # --- CONTRÔLES PRINCIPAUX ---
 col1, col2 = st.columns(2)
@@ -129,7 +134,7 @@ if start_btn:
     if username == "XXXXXX" or not safe_query or not selected_metadata:
         st.error("⚠️ Identifiants manquants, requête vide ou métadonnées non sélectionnées.")
     else:
-        st.session_state.documents = [] # Réinitialisation
+        st.session_state.documents = [] 
         st.session_state.extraction_status = "En cours"
         
         progress_bar = st.progress(0)
@@ -150,7 +155,7 @@ if start_btn:
                 root = ET.fromstring(response.content)
                 docs = []
                 for elem in root.iter():
-                    if elem.tag.endswith('}document') or elem.tag == 'document' or elem.tag.endswith('}result'):
+                    if elem.tag.split('}')[-1] in ['document', 'result']:
                         docs.append(elem)
                 
                 if not docs:
@@ -160,25 +165,12 @@ if start_btn:
                 for doc in docs:
                     doc_data = {}
                     
-                    # --- EXTRACTION DYNAMIQUE ---
+                    # Remplissage dynamique des colonnes via notre nouvelle fonction
                     for label in selected_metadata:
-                        xml_tag = METADATA_MAPPING[label]
-                        node = find_anywhere(doc, xml_tag)
-                        
-                        # Fallbacks
-                        if node is None and xml_tag == "ID_CELEX": node = find_anywhere(doc, "CELEX")
-                        if node is None and xml_tag == "WORK_IS_CREATED_BY_AGENT": node = find_anywhere(doc, "COUNTRY")
-                            
-                        if node is not None:
-                            if xml_tag == "EXPRESSION_TITLE":
-                                val_node = find_anywhere(node, "VALUE")
-                                doc_data[label] = val_node.text if val_node is not None else node.text
-                            else:
-                                doc_data[label] = node.text
-                        else:
-                            doc_data[label] = ""
+                        tags_to_search = METADATA_FALLBACKS[label]
+                        doc_data[label] = get_xml_value(doc, tags_to_search)
 
-                    # Ajout au cache en temps réel
+                    # Ajout au cache
                     st.session_state.documents.append(doc_data)
 
                 log_container.success(f"Page {page} : documents récupérés.")
@@ -192,22 +184,22 @@ if start_btn:
             
         st.session_state.extraction_status = "Terminée"
 
-# --- AFFICHAGE ET EXPORT (S'affiche même après un "Stop") ---
+# --- AFFICHAGE ET EXPORT SANS DÉPENDANCES SUPPLÉMENTAIRES ---
 if st.session_state.documents and st.session_state.extraction_status in ["Terminée", "Arrêtée"]:
-    st.success(f"🎉 {len(st.session_state.documents)} documents prêts à être exportés !")
+    st.success(f"🎉 {len(st.session_state.documents)} documents récupérés avec succès !")
     
     df = pd.DataFrame(st.session_state.documents)
     st.dataframe(df)
     
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='EURLex_Data')
+    # Export en CSV optimisé pour Excel (utf-8-sig + séparateur ;)
+    # Ne plante jamais, même sur des serveurs légers.
+    csv_data = df.to_csv(index=False, sep=';').encode('utf-8-sig')
     
     st.download_button(
-        label="📥 Télécharger l'Excel complet",
-        data=output.getvalue(),
-        file_name="eurlex_donnees.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        label="📥 Télécharger le fichier compatible Excel",
+        data=csv_data,
+        file_name="eurlex_donnees.csv",
+        mime="text/csv",
         type="primary"
     )
 elif st.session_state.extraction_status == "Terminée" and not st.session_state.documents:
