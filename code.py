@@ -8,7 +8,7 @@ import time
 st.set_page_config(page_title="EUR-Lex Extractor Pro", page_icon="🇪🇺", layout="wide")
 
 st.title("🇪🇺 Extracteur EUR-Lex Interactif")
-st.markdown("Extraction sécurisée avec lecture XML profonde (Deep Parse) et traitement intelligent des MNE.")
+st.markdown("Extraction totale des métadonnées avec affichage sur mesure.")
 
 # --- DICTIONNAIRES DE CONFIGURATION ---
 DOC_TYPES = {
@@ -20,15 +20,25 @@ DOC_TYPES = {
     "Jurisprudence": "EU_CASE_LAW"
 }
 
+# Dictionnaire exhaustif : L'extracteur récupérera TOUT ça en arrière-plan
 METADATA_FALLBACKS = {
     "CELEX (Identifiant)": ["ID_CELEX", "CELEX"],
     "Titre du document": ["EXPRESSION_TITLE", "TITLE", "TITLE_OF_DOCUMENT"],
-    "Date du document": ["WORK_DATE_DOCUMENT", "DATE_DOCUMENT", "DATE"],
     "Type de document": ["TYPE_OF_DOCUMENT", "FM_CODED", "ACT_TYPE"],
     "Auteur (Institution)": ["WORK_IS_CREATED_BY_AGENT", "AUTHOR", "CREATED_BY", "AGENT_NAME"], 
     "Pays concerné": ["NATIONAL_IMPLEMENTING_MEASURE_COUNTRY", "COUNTRY", "MEMBER_STATE"],
+    "Date du document": ["WORK_DATE_DOCUMENT", "DATE_DOCUMENT", "DATE"],
+    "Date de publication (JO)": ["DATE_PUBLICATION", "PUBLICATION_DATE"],
+    "Date d'entrée en vigueur": ["DATE_ENTRY_INTO_FORCE", "ENTRY_INTO_FORCE_DATE"],
+    "Date de fin de validité": ["DATE_END_OF_VALIDITY", "END_OF_VALIDITY_DATE"],
+    "Base légale": ["LEGAL_BASIS", "TREATY", "BASE_LEGALE"],
+    "Matière / Sujet": ["SUBJECT_MATTER", "SUBJECT"],
+    "Descripteurs Eurovoc": ["EUROVOC", "EUROVOC_DESCRIPTOR"],
+    "Numéro de procédure": ["PROCEDURE_NUMBER", "INTERINSTITUTIONAL_FILE_NUMBER"],
     "Numéro du document": ["DOC_NUM", "DOCUMENT_NUMBER"],
-    "Date de publication (JO)": ["DATE_PUBLICATION", "PUBLICATION_DATE"]
+    "Langue authentique": ["AUTHENTIC_LANGUAGE", "LANGUAGE"],
+    "Destinataire": ["ADDRESSEE"],
+    "ECLI (Jurisprudence)": ["ECLI"]
 }
 
 # --- INITIALISATION DE LA MÉMOIRE (SESSION STATE) ---
@@ -73,9 +83,9 @@ with st.sidebar:
     else:
         final_query = st.text_area("Collez votre formule experte ici :")
 
-    st.header("📊 Métadonnées à extraire")
+    st.header("📊 Filtres d'affichage")
     selected_metadata = st.multiselect(
-        "Colonnes du futur fichier :",
+        "Colonnes à afficher dans le Tableau / Excel (Le JSON contiendra tout) :",
         list(METADATA_FALLBACKS.keys()),
         default=["CELEX (Identifiant)", "Titre du document", "Date du document", "Auteur (Institution)", "Pays concerné"] 
     )
@@ -150,24 +160,22 @@ if stop_btn:
     st.session_state.extraction_status = "Arrêtée"
     st.warning("⚠️ L'extraction a été interrompue. Les données récoltées ont été conservées.")
 
-# --- CRÉATION DES ZONES D'AFFICHAGE FIXES (ARCHITECTURE HAUT/BAS) ---
-
+# --- ZONES D'AFFICHAGE FIXES ---
 st.markdown("### 📥 Export et Tableau (En Haut)")
-export_slot = st.empty() # Emplacement réservé pour le bouton de téléchargement
-table_slot = st.empty()  # Emplacement réservé pour le tableau Excel
+export_slot = st.empty() 
+table_slot = st.empty()  
 
 st.divider()
 
 st.markdown("### ⚙️ Journal de progression")
-progress_bar_slot = st.empty() # Emplacement pour la barre de chargement
-status_text_slot = st.empty()  # Emplacement pour le texte "Recherche x/x"
-log_container = st.container() # Emplacement pour les messages "Page récupérée"
+progress_bar_slot = st.empty() 
+status_text_slot = st.empty()  
+log_container = st.container() 
 
 st.divider()
 
-st.markdown("### 📦 Données brutes récupérées (En Bas)")
-raw_data_slot = st.empty() # Emplacement réservé pour les données JSON
-
+st.markdown("### 📦 Données brutes complètes (En Bas)")
+raw_data_slot = st.empty() 
 
 # --- LOGIQUE D'EXTRACTION ---
 if start_btn:
@@ -179,7 +187,6 @@ if start_btn:
         st.session_state.documents = [] 
         st.session_state.extraction_status = "En cours"
         
-        # Initialisation des éléments visuels
         progress_bar = progress_bar_slot.progress(0)
 
         for i in range(max_requests):
@@ -206,31 +213,29 @@ if start_btn:
                 for doc in docs:
                     doc_data = {}
                     
-                    for label in selected_metadata:
-                        tags_to_search = METADATA_FALLBACKS[label]
+                    # 1. Extraction EXHAUSTIVE (On boucle sur le dictionnaire entier, pas juste sur la sélection)
+                    for label, tags_to_search in METADATA_FALLBACKS.items():
                         doc_data[label] = get_xml_value(doc, tags_to_search)
 
+                    # 2. Post-traitement MNE
                     celex = doc_data.get("CELEX (Identifiant)", "")
-                    
                     if celex.startswith("7") and "_" in celex:
                         code_pays = celex.split('_')[0][-3:]
-                        
-                        if "Pays concerné" in doc_data and doc_data["Pays concerné"] == "Non renseigné":
+                        if doc_data.get("Pays concerné") == "Non renseigné":
                             doc_data["Pays concerné"] = code_pays
-                            
-                        if "Auteur (Institution)" in doc_data and doc_data["Auteur (Institution)"] == "Non renseigné":
+                        if doc_data.get("Auteur (Institution)") == "Non renseigné":
                             doc_data["Auteur (Institution)"] = code_pays
 
-                    # Ajout au cache
+                    # Ajout au cache complet
                     st.session_state.documents.append(doc_data)
 
                 log_container.success(f"Page {page} : documents récupérés.")
                 
-                # Mises à jour visuelles EN DIRECT pendant la boucle
+                # Mise à jour en direct : on filtre le tableau avec [selected_metadata]
                 if st.session_state.documents:
-                    live_df = pd.DataFrame(st.session_state.documents)
-                    table_slot.dataframe(live_df) # Met à jour le tableau en haut
-                    raw_data_slot.json(st.session_state.documents) # Met à jour le JSON en bas
+                    full_df = pd.DataFrame(st.session_state.documents)
+                    table_slot.dataframe(full_df[selected_metadata]) # Tableau filtré
+                    raw_data_slot.json(st.session_state.documents)   # JSON intégral
                 
             except ET.ParseError:
                 log_container.error(f"⚠️ Erreur de lecture XML à la page {page}.")
@@ -241,14 +246,16 @@ if start_btn:
             
         st.session_state.extraction_status = "Terminée"
 
-# --- AFFICHAGE FINAL PERMANENT (Même après un Stop) ---
+# --- AFFICHAGE FINAL PERMANENT ---
 if st.session_state.documents and st.session_state.extraction_status in ["Terminée", "Arrêtée"]:
-    df = pd.DataFrame(st.session_state.documents)
+    # Création du DataFrame complet puis filtré
+    full_df = pd.DataFrame(st.session_state.documents)
+    filtered_df = full_df[selected_metadata]
     
-    # 1. On injecte le bouton d'export dans son emplacement EN HAUT
     with export_slot.container():
         st.success(f"🎉 {len(st.session_state.documents)} documents récupérés avec succès !")
-        csv_data = df.to_csv(index=False, sep=';').encode('utf-8-sig')
+        # L'export CSV ne contient que les colonnes choisies par l'utilisateur
+        csv_data = filtered_df.to_csv(index=False, sep=';').encode('utf-8-sig')
         st.download_button(
             label="📥 Télécharger le fichier compatible Excel",
             data=csv_data,
@@ -257,8 +264,6 @@ if st.session_state.documents and st.session_state.extraction_status in ["Termin
             type="primary"
         )
         
-    # 2. On s'assure que le tableau final est bien affiché EN HAUT
-    table_slot.dataframe(df)
-    
-    # 3. On s'assure que les données brutes sont bien affichées EN BAS
+    # Affichage filtré en haut, JSON intégral en bas
+    table_slot.dataframe(filtered_df)
     raw_data_slot.json(st.session_state.documents)
