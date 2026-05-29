@@ -6,10 +6,36 @@ import time
 import io
 
 # --- CONFIGURATION DE L'INTERFACE STREAMLIT ---
-st.set_page_config(page_title="EUR-Lex Extractor", page_icon="🇪🇺", layout="wide")
+st.set_page_config(page_title="EUR-Lex Extractor Pro", page_icon="🇪🇺", layout="wide")
 
-st.title("🇪🇺 Extracteur de Documents EUR-Lex")
-st.markdown("Interface d'extraction respectant le standard WS-Security d'EUR-Lex.")
+st.title("🇪🇺 Extracteur EUR-Lex Interactif")
+st.markdown("Extraction sécurisée avec sauvegarde en temps réel et sélection de métadonnées.")
+
+# --- DICTIONNAIRES DE CONFIGURATION ---
+DOC_TYPES = {
+    "Tous les types": None,
+    "Directives": "DIR",
+    "Règlements": "REG",
+    "Décisions": "DEC",
+    "Mesures Nationales d'Exécution (MNE)": "MNE",
+    "Jurisprudence": "EU_CASE_LAW"
+}
+
+METADATA_MAPPING = {
+    "CELEX (Identifiant)": "ID_CELEX",
+    "Titre du document": "EXPRESSION_TITLE",
+    "Date du document": "DATE_DOCUMENT",
+    "Type de document": "TYPE_OF_DOCUMENT",
+    "Auteur / Pays": "WORK_IS_CREATED_BY_AGENT",
+    "Numéro du document": "DOC_NUM",
+    "Date de publication (JO)": "DATE_PUBLICATION"
+}
+
+# --- INITIALISATION DE LA MÉMOIRE (SESSION STATE) ---
+if 'documents' not in st.session_state:
+    st.session_state.documents = []
+if 'extraction_status' not in st.session_state:
+    st.session_state.extraction_status = "En attente"
 
 # --- BARRE LATÉRALE : PARAMÈTRES ---
 with st.sidebar:
@@ -17,23 +43,40 @@ with st.sidebar:
     username = st.text_input("Nom d'utilisateur", value="XXXXXX")
     password = st.text_input("Mot de passe", value="XXXXXX", type="password")
     
-    st.header("⚙️ Paramètres de recherche")
-    query = st.text_input("Requête (Filtre)", value='DTS_SUBDOM:"MNE"')
-    metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX, TITLE, COUNTRY")
+    st.header("🔍 Critères de recherche")
+    search_mode = st.radio("Mode :", ["Générateur (Facile)", "Requête Experte"])
+    
+    final_query = ""
+    if search_mode == "Générateur (Facile)":
+        txt_integral = st.text_input("Mots dans le texte intégral :")
+        doc_type = st.selectbox("Type d'acte :", list(DOC_TYPES.keys()))
+        annee = st.text_input("Année (ex: 2023) :", max_chars=4)
+        
+        query_parts = ["DTS_SUBDOM=LEGISLATION"] # Base par défaut
+        if txt_integral: query_parts.append(f'TE~"{txt_integral.strip()}"')
+        if DOC_TYPES[doc_type]: query_parts.append(f'FM_CODED={DOC_TYPES[doc_type]}')
+        if annee: query_parts.append(f'DD_YEAR={annee}')
+            
+        final_query = " AND ".join(query_parts)
+        st.info(f"Requête : `{final_query}`")
+    else:
+        final_query = st.text_area("Collez votre formule :", value='DTS_SUBDOM=LEGISLATION AND FM_CODED=DIR')
+        
+    st.header("📊 Métadonnées à extraire")
+    selected_metadata = st.multiselect(
+        "Colonnes du futur Excel :",
+        list(METADATA_MAPPING.keys()),
+        default=["CELEX (Identifiant)", "Titre du document", "Date du document"]
+    )
     
     st.header("⏱️ Pagination & Limites")
-    rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=5)
-    max_requests = st.number_input("Nombre de requêtes maximum", min_value=1, max_value=2000, value=1000)
-    delay = st.slider("Délai entre requêtes (secondes)", min_value=0, max_value=15, value=5)
+    rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=10)
+    max_requests = st.number_input("Nombre de requêtes maximum", min_value=1, max_value=2000, value=5)
+    delay = st.slider("Délai (secondes)", min_value=0, max_value=15, value=2)
 
 URL = "https://eur-lex.europa.eu/EURLexWebService"
 
-# --- FONCTION POUR ENVOYER UNE REQUÊTE SOAP VALIDE ---
-def send_soap_request(page, log_container):
-    # Pour récupérer les métadonnées spécifiques sur EUR-Lex, la syntaxe exige un "SELECT ... WHERE ..."
-    full_expert_query = query
-    
-    # Enveloppe SOAP stricte respectant WS-Security et le format de recherche EUR-Lex
+def send_soap_request(page, safe_query, log_container):
     soap_query = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sear="http://eur-lex.europa.eu/search">
    <soap:Header>
@@ -46,7 +89,7 @@ def send_soap_request(page, log_container):
    </soap:Header>
    <soap:Body>
         <sear:searchRequest>
-            <sear:expertQuery><![CDATA[{full_expert_query}]]></sear:expertQuery>
+            <sear:expertQuery><![CDATA[{safe_query}]]></sear:expertQuery>
             <sear:page>{page}</sear:page>
             <sear:pageSize>{rows_per_request}</sear:pageSize>
             <sear:searchLanguage>fr</sear:searchLanguage>
@@ -54,123 +97,118 @@ def send_soap_request(page, log_container):
    </soap:Body>
 </soap:Envelope>"""
 
-
-    # L'API SOAP 1.2 exige un Content-Type 'application/soap+xml'
-    headers = {
-        'Content-Type': 'application/soap+xml; charset=utf-8'
-    }
-
+    headers = {'Content-Type': 'application/soap+xml; charset=utf-8'}
     try:
-        # Note : On retire HTTPBasicAuth() car l'authentification est désormais dans le Header XML
         response = requests.post(URL, data=soap_query.encode('utf-8'), headers=headers, timeout=60)
         return response
     except requests.exceptions.RequestException as e:
-        log_container.error(f"⚠️ Erreur de connexion au serveur : {e}")
+        log_container.error(f"⚠️ Erreur de connexion : {e}")
         return None
 
-# --- BOUTON DE LANCEMENT ---
-if st.button("🚀 Lancer l'extraction", type="primary"):
-    if username == "XXXXXX" or password == "XXXXXX" or not username or not password:
-        st.warning("⚠️ Veuillez entrer vos identifiants EUR-Lex valides dans la barre latérale.")
+# Fonction pour chercher les balises sans se soucier des espaces de noms (namespaces)
+def find_anywhere(parent_node, tag_name):
+    for elem in parent_node.iter():
+        if elem.tag == tag_name or elem.tag.endswith(f'}}[{tag_name}]') or elem.tag.endswith(f'}}{tag_name}'):
+            return elem
+    return None
+
+# --- CONTRÔLES PRINCIPAUX ---
+col1, col2 = st.columns(2)
+start_btn = col1.button("🚀 Lancer l'extraction", type="primary")
+stop_btn = col2.button("⏹️ Arrêter et sauvegarder", type="secondary")
+
+# Gestion de l'interruption
+if stop_btn:
+    st.session_state.extraction_status = "Arrêtée"
+    st.warning("⚠️ L'extraction a été interrompue. Les données récoltées ont été conservées.")
+
+# Lancement de l'extraction
+if start_btn:
+    safe_query = final_query.strip()
+    
+    if username == "XXXXXX" or not safe_query or not selected_metadata:
+        st.error("⚠️ Identifiants manquants, requête vide ou métadonnées non sélectionnées.")
     else:
-        all_documents = []
+        st.session_state.documents = [] # Réinitialisation
+        st.session_state.extraction_status = "En cours"
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
         log_container = st.container()
 
-        # Boucle de requêtes (EUR-Lex utilise des numéros de pages, pas des index de départ)
         for i in range(max_requests):
             page = i + 1 
             status_text.text(f"🔍 Requête {page}/{max_requests} en cours...")
             
-            response = send_soap_request(page, log_container)
+            response = send_soap_request(page, safe_query, log_container)
             
-            if response is None:
-                break # Erreur réseau, on arrête la boucle
-                
-            # Vérification rigoureuse de la réponse HTTP
-            if response.status_code != 200:
-                log_container.error(f"❌ Échec critique. EUR-Lex a renvoyé l'erreur HTTP {response.status_code}.")
-                with log_container.expander("Voir le contenu renvoyé par EUR-Lex (pour débogage)"):
-                    st.code(response.text[:2000])
-                break # On arrête immédiatement pour ne pas générer 100 fois la même erreur
+            if response is None or response.status_code != 200:
+                log_container.error(f"❌ Échec de la requête (HTTP {response.status_code if response else 'Inconnu'}).")
+                break 
 
             try:
-                if response.status_code == 200:
-                    root = ET.fromstring(response.content)
-                    
-                    # --- NOUVELLE FONCTION POUR IGNORER LES NAMESPACES ---
-                    def find_anywhere(parent_node, tag_name):
-                        """Cherche une balise peu importe son namespace"""
-                        for elem in parent_node.iter():
-                            if elem.tag == tag_name or elem.tag.endswith(f'}}[{tag_name}]') or elem.tag.endswith(f'}}{tag_name}'):
-                                return elem
-                        return None
-
-                    # 1. Isoler tous les documents
-                    docs = []
-                    for elem in root.iter():
-                        if elem.tag.endswith('}document') or elem.tag == 'document' or elem.tag.endswith('}result'):
-                            docs.append(elem)
-                    
-                    if not docs:
-                        log_container.info(f"✅ Extraction terminée (plus de résultats à partir de la page {page}).")
-                        break
-                        
-                    # 2. Extraire les métadonnées de chaque document
-                    for doc in docs:
-                        celex_node = find_anywhere(doc, "ID_CELEX") or find_anywhere(doc, "CELEX")
-                        
-                        # Cas particulier du titre souvent enfoui dans EXPRESSION_TITLE -> VALUE
-                        expr_title = find_anywhere(doc, "EXPRESSION_TITLE")
-                        if expr_title is not None:
-                            title_node = find_anywhere(expr_title, "VALUE")
-                        else:
-                            title_node = find_anywhere(doc, "TITLE")
-                            
-                        date_node = find_anywhere(doc, "DATE_DOCUMENT")
-                        
-                        all_documents.append({
-                            "CELEX (Identifiant)": celex_node.text if celex_node is not None else "",
-                            "Titre": title_node.text if title_node is not None else "",
-                            "Date": date_node.text if date_node is not None else ""
-                        })
-                        
-                    log_container.success(f"Page {page} : Récupération réussie.")
-                else:
-                    log_container.error(f"❌ Erreur Serveur HTTP {response.status_code}")
-                    with log_container.expander("Voir le détail de l'erreur"):
-                        st.code(response.text[:1000])
+                root = ET.fromstring(response.content)
+                docs = []
+                for elem in root.iter():
+                    if elem.tag.endswith('}document') or elem.tag == 'document' or elem.tag.endswith('}result'):
+                        docs.append(elem)
+                
+                if not docs:
+                    log_container.info(f"✅ Fin de la pagination atteinte à la page {page}.")
                     break
+
+                for doc in docs:
+                    doc_data = {}
                     
+                    # --- EXTRACTION DYNAMIQUE ---
+                    for label in selected_metadata:
+                        xml_tag = METADATA_MAPPING[label]
+                        node = find_anywhere(doc, xml_tag)
+                        
+                        # Fallbacks
+                        if node is None and xml_tag == "ID_CELEX": node = find_anywhere(doc, "CELEX")
+                        if node is None and xml_tag == "WORK_IS_CREATED_BY_AGENT": node = find_anywhere(doc, "COUNTRY")
+                            
+                        if node is not None:
+                            if xml_tag == "EXPRESSION_TITLE":
+                                val_node = find_anywhere(node, "VALUE")
+                                doc_data[label] = val_node.text if val_node is not None else node.text
+                            else:
+                                doc_data[label] = node.text
+                        else:
+                            doc_data[label] = ""
+
+                    # Ajout au cache en temps réel
+                    st.session_state.documents.append(doc_data)
+
+                log_container.success(f"Page {page} : documents récupérés.")
+                
             except ET.ParseError:
-                log_container.error(f"⚠️ Erreur de lecture XML par Python à la page {page}.")
-                break
+                log_container.error(f"⚠️ Erreur de lecture XML à la page {page}.")
+                break 
 
             progress_bar.progress((i + 1) / max_requests)
+            time.sleep(delay)
+            
+        st.session_state.extraction_status = "Terminée"
 
-            if i < max_requests - 1:
-                time.sleep(delay)
-
-        # --- EXPORT ---
-        status_text.text("✨ Processus terminé !")
-        
-        if all_documents:
-            st.success(f"🎉 Succès ! {len(all_documents)} documents récupérés au total.")
-            
-            df = pd.DataFrame(all_documents)
-            st.dataframe(df.head(10))
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='EURLex_Data')
-            processed_data = output.getvalue()
-            
-            st.download_button(
-                label="📥 Télécharger les résultats en Excel",
-                data=processed_data,
-                file_name=f"eurlex_resultats.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            st.error("❌ Aucune donnée n'a été récupérée. Vérifiez votre requête ou vos droits d'accès au WebService.")
+# --- AFFICHAGE ET EXPORT (S'affiche même après un "Stop") ---
+if st.session_state.documents and st.session_state.extraction_status in ["Terminée", "Arrêtée"]:
+    st.success(f"🎉 {len(st.session_state.documents)} documents prêts à être exportés !")
+    
+    df = pd.DataFrame(st.session_state.documents)
+    st.dataframe(df)
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='EURLex_Data')
+    
+    st.download_button(
+        label="📥 Télécharger l'Excel complet",
+        data=output.getvalue(),
+        file_name="eurlex_donnees.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
+elif st.session_state.extraction_status == "Terminée" and not st.session_state.documents:
+    st.warning("Aucun résultat trouvé pour cette recherche.")
