@@ -171,6 +171,10 @@ if start_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
         log_container = st.container()
+        
+        # --- NOUVEAU : Création d'un espace vide pour le tableau en direct ---
+        st.markdown("### 📊 Aperçu des données en direct")
+        live_table = st.empty() 
 
         for i in range(max_requests):
             page = i + 1 
@@ -196,16 +200,16 @@ if start_btn:
                 for doc in docs:
                     doc_data = {}
                     
-                    # 1. Remplissage dynamique des colonnes via notre fonction XML
+                    # 1. Remplissage dynamique des colonnes
                     for label in selected_metadata:
                         tags_to_search = METADATA_FALLBACKS[label]
                         doc_data[label] = get_xml_value(doc, tags_to_search)
 
-                    # 2. POST-TRAITEMENT INTELLIGENT (Pour les lois nationales MNE du secteur 7)
+                    # 2. POST-TRAITEMENT INTELLIGENT
                     celex = doc_data.get("CELEX (Identifiant)", "")
                     
                     if celex.startswith("7") and "_" in celex:
-                        code_pays = celex.split('_')[0][-3:] # Isole les 3 lettres du pays
+                        code_pays = celex.split('_')[0][-3:] 
                         
                         if "Pays concerné" in doc_data and doc_data["Pays concerné"] == "Non renseigné":
                             doc_data["Pays concerné"] = code_pays
@@ -218,6 +222,11 @@ if start_btn:
 
                 log_container.success(f"Page {page} : documents récupérés.")
                 
+                # --- NOUVEAU : Mise à jour du tableau en temps réel à chaque fin de page ---
+                if st.session_state.documents:
+                    live_df = pd.DataFrame(st.session_state.documents)
+                    live_table.dataframe(live_df)
+
             except ET.ParseError:
                 log_container.error(f"⚠️ Erreur de lecture XML à la page {page}.")
                 break 
