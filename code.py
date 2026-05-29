@@ -20,13 +20,14 @@ DOC_TYPES = {
     "Jurisprudence": "EU_CASE_LAW"
 }
 
+# On ajoute les vraies étiquettes XML renvoyées par le serveur (comme WORK_DATE_DOCUMENT)
 METADATA_FALLBACKS = {
     "CELEX (Identifiant)": ["ID_CELEX", "CELEX"],
     "Titre du document": ["EXPRESSION_TITLE", "TITLE", "TITLE_OF_DOCUMENT"],
-    "Date du document": ["DATE_DOCUMENT", "DATE"],
+    "Date du document": ["WORK_DATE_DOCUMENT", "DATE_DOCUMENT", "DATE"], # <- Correction ici
     "Type de document": ["TYPE_OF_DOCUMENT", "FM_CODED", "ACT_TYPE"],
-    "Auteur (Institution)": ["WORK_IS_CREATED_BY_AGENT", "AUTHOR"], # Séparé !
-    "Pays concerné": ["COUNTRY"],                                   # Séparé !
+    "Auteur (Institution)": ["WORK_IS_CREATED_BY_AGENT", "AUTHOR"],
+    "Pays concerné": ["NATIONAL_IMPLEMENTING_MEASURE_COUNTRY", "COUNTRY"], # <- Correction ici
     "Numéro du document": ["DOC_NUM", "DOCUMENT_NUMBER"],
     "Date de publication (JO)": ["DATE_PUBLICATION", "PUBLICATION_DATE"]
 }
@@ -129,40 +130,24 @@ if stop_btn:
     st.warning("⚠️ L'extraction a été interrompue. Les données récoltées ont été conservées.")
 
 # Lancement de l'extraction
-# Lancement de l'extraction
 if start_btn:
     safe_query = final_query.strip()
     
     if username == "XXXXXX" or not safe_query or not selected_metadata:
         st.error("⚠️ Identifiants manquants, requête vide ou métadonnées non sélectionnées.")
     else:
-        # --- LA CORRECTION EST ICI : Forcer l'API à renvoyer les données ---
-        # On liste les vrais noms techniques des colonnes que vous avez cochées (ex: DATE_DOCUMENT)
-        tags_to_request = [METADATA_FALLBACKS[label][0] for label in selected_metadata]
-        select_string = "SELECT " + ", ".join(tags_to_request)
-        
-        # On assemble le SELECT et la requête avec un WHERE (sauf si vous l'aviez déjà écrit)
-        if not safe_query.upper().startswith("SELECT"):
-            api_query = f"{select_string} WHERE {safe_query}"
-        else:
-            api_query = safe_query
-            
         st.session_state.documents = [] 
         st.session_state.extraction_status = "En cours"
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         log_container = st.container()
-        
-        # Petit message pour vérifier ce que le script envoie vraiment au serveur
-        log_container.info(f"📡 Envoi au serveur : `{api_query}`")
 
         for i in range(max_requests):
             page = i + 1 
             status_text.text(f"🔍 Requête {page}/{max_requests} en cours...")
             
-            # On envoie api_query au lieu de safe_query !
-            response = send_soap_request(page, api_query, log_container)
+            response = send_soap_request(page, safe_query, log_container)
             
             if response is None or response.status_code != 200:
                 log_container.error(f"❌ Échec de la requête (HTTP {response.status_code if response else 'Inconnu'}).")
@@ -182,7 +167,7 @@ if start_btn:
                 for doc in docs:
                     doc_data = {}
                     
-                    # Remplissage dynamique des colonnes via notre fonction
+                    # Remplissage dynamique des colonnes via notre nouvelle fonction
                     for label in selected_metadata:
                         tags_to_search = METADATA_FALLBACKS[label]
                         doc_data[label] = get_xml_value(doc, tags_to_search)
@@ -200,3 +185,24 @@ if start_btn:
             time.sleep(delay)
             
         st.session_state.extraction_status = "Terminée"
+
+# --- AFFICHAGE ET EXPORT SANS DÉPENDANCES SUPPLÉMENTAIRES ---
+if st.session_state.documents and st.session_state.extraction_status in ["Terminée", "Arrêtée"]:
+    st.success(f"🎉 {len(st.session_state.documents)} documents récupérés avec succès !")
+    
+    df = pd.DataFrame(st.session_state.documents)
+    st.dataframe(df)
+    
+    # Export en CSV optimisé pour Excel (utf-8-sig + séparateur ;)
+    # Ne plante jamais, même sur des serveurs légers.
+    csv_data = df.to_csv(index=False, sep=';').encode('utf-8-sig')
+    
+    st.download_button(
+        label="📥 Télécharger le fichier compatible Excel",
+        data=csv_data,
+        file_name="eurlex_donnees.csv",
+        mime="text/csv",
+        type="primary"
+    )
+elif st.session_state.extraction_status == "Terminée" and not st.session_state.documents:
+    st.warning("Aucun résultat trouvé pour cette recherche.")
