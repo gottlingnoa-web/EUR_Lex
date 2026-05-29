@@ -20,7 +20,6 @@ DOC_TYPES = {
     "Jurisprudence": "EU_CASE_LAW"
 }
 
-# Dictionnaire enrichi avec toutes les étiquettes XML possibles d'EUR-Lex
 METADATA_FALLBACKS = {
     "CELEX (Identifiant)": ["ID_CELEX", "CELEX"],
     "Titre du document": ["EXPRESSION_TITLE", "TITLE", "TITLE_OF_DOCUMENT"],
@@ -55,7 +54,6 @@ with st.sidebar:
         
         query_parts = []
         
-        # Bascule intelligente du domaine (Législation vs MNE)
         if doc_type in ["Directives", "Règlements", "Décisions", "Tous les types"]:
             query_parts.append("DTS_SUBDOM=LEGISLATION")
             if DOC_TYPES[doc_type]: 
@@ -67,7 +65,6 @@ with st.sidebar:
         elif doc_type == "Jurisprudence":
             query_parts.append("DTS_SUBDOM=EU_CASE_LAW") 
             
-        # Ajout des filtres de texte et d'année
         if txt_integral: query_parts.append(f'TE~"{txt_integral.strip()}"')
         if annee: query_parts.append(f'DD_YEAR={annee}')
             
@@ -119,27 +116,23 @@ def send_soap_request(page, safe_query, log_container):
         log_container.error(f"⚠️ Erreur de connexion : {e}")
         return None
 
-# NOUVELLE FONCTION XML INTELLIGENTE : Filtre les liens internet et trouve l'auteur/date proprement
 def get_xml_value(parent_node, tag_names):
     for tag in tag_names:
         for elem in parent_node.iter():
             if elem.tag.split('}')[-1] == tag:
                 
-                # 1. On cherche en priorité un code officiel (ex: COM, EP, FRA) dans IDENTIFIER
                 for child in elem.iter():
                     if child.tag.split('}')[-1] == 'IDENTIFIER' and child.text:
                         val = child.text.replace('AG//', '').replace('CT//', '').strip()
                         if val and not val.startswith("http"): 
                             return val
                             
-                # 2. Sinon, on cherche une valeur propre (ex: Date) dans VALUE
                 for child in elem.iter():
                     if child.tag.split('}')[-1] == 'VALUE' and child.text:
                         val = child.text.strip()
                         if val and not val.startswith("http"):
                             return val
                             
-                # 3. Plan de secours absolu : on extrait tout le texte, MAIS on détruit les URL
                 raw_text = " ".join([t.strip() for t in elem.itertext() if t.strip()])
                 clean_text = " ".join([word for word in raw_text.split() if not word.startswith("http")])
                 
@@ -148,17 +141,35 @@ def get_xml_value(parent_node, tag_names):
                     
     return "Non renseigné"
 
-# --- CONTRÔLES PRINCIPAUX ---
+# --- BOUTONS DE CONTRÔLE ---
 col1, col2 = st.columns(2)
 start_btn = col1.button("🚀 Lancer l'extraction", type="primary")
 stop_btn = col2.button("⏹️ Arrêter et sauvegarder", type="secondary")
 
-# Gestion de l'interruption
 if stop_btn:
     st.session_state.extraction_status = "Arrêtée"
     st.warning("⚠️ L'extraction a été interrompue. Les données récoltées ont été conservées.")
 
-# Lancement de l'extraction
+# --- CRÉATION DES ZONES D'AFFICHAGE FIXES (ARCHITECTURE HAUT/BAS) ---
+
+st.markdown("### 📥 Export et Tableau (En Haut)")
+export_slot = st.empty() # Emplacement réservé pour le bouton de téléchargement
+table_slot = st.empty()  # Emplacement réservé pour le tableau Excel
+
+st.divider()
+
+st.markdown("### ⚙️ Journal de progression")
+progress_bar_slot = st.empty() # Emplacement pour la barre de chargement
+status_text_slot = st.empty()  # Emplacement pour le texte "Recherche x/x"
+log_container = st.container() # Emplacement pour les messages "Page récupérée"
+
+st.divider()
+
+st.markdown("### 📦 Données brutes récupérées (En Bas)")
+raw_data_slot = st.empty() # Emplacement réservé pour les données JSON
+
+
+# --- LOGIQUE D'EXTRACTION ---
 if start_btn:
     safe_query = final_query.strip()
     
@@ -168,17 +179,12 @@ if start_btn:
         st.session_state.documents = [] 
         st.session_state.extraction_status = "En cours"
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        log_container = st.container()
-        
-        # --- NOUVEAU : Création d'un espace vide pour le tableau en direct ---
-        st.markdown("### 📊 Aperçu des données en direct")
-        live_table = st.empty() 
+        # Initialisation des éléments visuels
+        progress_bar = progress_bar_slot.progress(0)
 
         for i in range(max_requests):
             page = i + 1 
-            status_text.text(f"🔍 Requête {page}/{max_requests} en cours...")
+            status_text_slot.text(f"🔍 Requête {page}/{max_requests} en cours...")
             
             response = send_soap_request(page, safe_query, log_container)
             
@@ -200,16 +206,14 @@ if start_btn:
                 for doc in docs:
                     doc_data = {}
                     
-                    # 1. Remplissage dynamique des colonnes
                     for label in selected_metadata:
                         tags_to_search = METADATA_FALLBACKS[label]
                         doc_data[label] = get_xml_value(doc, tags_to_search)
 
-                    # 2. POST-TRAITEMENT INTELLIGENT
                     celex = doc_data.get("CELEX (Identifiant)", "")
                     
                     if celex.startswith("7") and "_" in celex:
-                        code_pays = celex.split('_')[0][-3:] 
+                        code_pays = celex.split('_')[0][-3:]
                         
                         if "Pays concerné" in doc_data and doc_data["Pays concerné"] == "Non renseigné":
                             doc_data["Pays concerné"] = code_pays
@@ -217,16 +221,17 @@ if start_btn:
                         if "Auteur (Institution)" in doc_data and doc_data["Auteur (Institution)"] == "Non renseigné":
                             doc_data["Auteur (Institution)"] = code_pays
 
-                    # 3. Ajout au cache
+                    # Ajout au cache
                     st.session_state.documents.append(doc_data)
 
                 log_container.success(f"Page {page} : documents récupérés.")
                 
-                # --- NOUVEAU : Mise à jour du tableau en temps réel à chaque fin de page ---
+                # Mises à jour visuelles EN DIRECT pendant la boucle
                 if st.session_state.documents:
                     live_df = pd.DataFrame(st.session_state.documents)
-                    live_table.dataframe(live_df)
-
+                    table_slot.dataframe(live_df) # Met à jour le tableau en haut
+                    raw_data_slot.json(st.session_state.documents) # Met à jour le JSON en bas
+                
             except ET.ParseError:
                 log_container.error(f"⚠️ Erreur de lecture XML à la page {page}.")
                 break 
@@ -236,22 +241,24 @@ if start_btn:
             
         st.session_state.extraction_status = "Terminée"
 
-# --- AFFICHAGE ET EXPORT SANS DÉPENDANCES SUPPLÉMENTAIRES ---
+# --- AFFICHAGE FINAL PERMANENT (Même après un Stop) ---
 if st.session_state.documents and st.session_state.extraction_status in ["Terminée", "Arrêtée"]:
-    st.success(f"🎉 {len(st.session_state.documents)} documents récupérés avec succès !")
-    
     df = pd.DataFrame(st.session_state.documents)
-    st.dataframe(df)
     
-    # Export en CSV optimisé pour Excel (utf-8-sig + séparateur ;)
-    csv_data = df.to_csv(index=False, sep=';').encode('utf-8-sig')
+    # 1. On injecte le bouton d'export dans son emplacement EN HAUT
+    with export_slot.container():
+        st.success(f"🎉 {len(st.session_state.documents)} documents récupérés avec succès !")
+        csv_data = df.to_csv(index=False, sep=';').encode('utf-8-sig')
+        st.download_button(
+            label="📥 Télécharger le fichier compatible Excel",
+            data=csv_data,
+            file_name="eurlex_donnees.csv",
+            mime="text/csv",
+            type="primary"
+        )
+        
+    # 2. On s'assure que le tableau final est bien affiché EN HAUT
+    table_slot.dataframe(df)
     
-    st.download_button(
-        label="📥 Télécharger le fichier compatible Excel",
-        data=csv_data,
-        file_name="eurlex_donnees.csv",
-        mime="text/csv",
-        type="primary"
-    )
-elif st.session_state.extraction_status == "Terminée" and not st.session_state.documents:
-    st.warning("Aucun résultat trouvé pour cette recherche.")
+    # 3. On s'assure que les données brutes sont bien affichées EN BAS
+    raw_data_slot.json(st.session_state.documents)
