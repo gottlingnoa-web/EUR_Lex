@@ -20,13 +20,13 @@ DOC_TYPES = {
     "Jurisprudence": "EU_CASE_LAW"
 }
 
-# NOUVEAU : Un dictionnaire avec des listes de balises alternatives (Plans A, B, C...)
 METADATA_FALLBACKS = {
     "CELEX (Identifiant)": ["ID_CELEX", "CELEX"],
     "Titre du document": ["EXPRESSION_TITLE", "TITLE", "TITLE_OF_DOCUMENT"],
     "Date du document": ["DATE_DOCUMENT", "DATE"],
     "Type de document": ["TYPE_OF_DOCUMENT", "FM_CODED", "ACT_TYPE"],
-    "Auteur / Pays": ["WORK_IS_CREATED_BY_AGENT", "COUNTRY", "AUTHOR"],
+    "Auteur (Institution)": ["WORK_IS_CREATED_BY_AGENT", "AUTHOR"], # Séparé !
+    "Pays concerné": ["COUNTRY"],                                   # Séparé !
     "Numéro du document": ["DOC_NUM", "DOCUMENT_NUMBER"],
     "Date de publication (JO)": ["DATE_PUBLICATION", "PUBLICATION_DATE"]
 }
@@ -66,13 +66,14 @@ with st.sidebar:
     selected_metadata = st.multiselect(
         "Colonnes du futur fichier :",
         list(METADATA_FALLBACKS.keys()),
-        default=["CELEX (Identifiant)", "Titre du document", "Date du document", "Auteur / Pays"]
+        # On met à jour les choix par défaut ici :
+        default=["CELEX (Identifiant)", "Titre du document", "Date du document", "Auteur (Institution)", "Pays concerné"] 
     )
     
     st.header("⏱️ Pagination & Limites")
     rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=10)
     max_requests = st.number_input("Nombre de requêtes maximum", min_value=1, max_value=2000, value=5)
-    delay = st.slider("Délai (secondes)", min_value=0, max_value=15, value=2)
+    delay = st.slider("Délai (secondes)", min_value=0, max_value=15, value=0)
 
 URL = "https://eur-lex.europa.eu/EURLexWebService"
 
