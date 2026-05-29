@@ -18,7 +18,7 @@ with st.sidebar:
     password = st.text_input("Mot de passe", value="XXXXXX", type="password")
     
     st.header("⚙️ Paramètres de recherche")
-    query = st.text_input("Requête (Filtre)", value="DTS_SUBDOM:"MNE"")
+    query = st.text_input("Requête (Filtre)", value='DTS_SUBDOM:"MNE"')
     metadata = st.text_input("Métadonnées (séparées par des virgules)", value="CELEX, TITLE, COUNTRY")
     
     st.header("⏱️ Pagination & Limites")
