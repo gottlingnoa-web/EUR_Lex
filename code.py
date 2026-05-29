@@ -107,17 +107,28 @@ def send_soap_request(page, safe_query, log_container):
         log_container.error(f"⚠️ Erreur de connexion : {e}")
         return None
 
-# NOUVELLE FONCTION XML ULTIME : Ignore les namespaces ET gère les sous-balises imbriquées
+# NOUVELLE FONCTION XML INTELLIGENTE : Cible précisément la bonne donnée
 def get_xml_value(parent_node, tag_names):
     for tag in tag_names:
         for elem in parent_node.iter():
-            # elem.tag.split('}')[-1] retire automatiquement la pollution des URLs namespaces
             if elem.tag.split('}')[-1] == tag:
-                # itertext() fusionne tout le texte, même s'il est caché dans des sous-balises
-                text_content = "".join(elem.itertext()).strip()
-                if text_content:
-                    return text_content
-    return "Non renseigné" # Si le document ne contient vraiment pas l'info
+                
+                # Stratégie 1 : Chercher une sous-balise <VALUE> (Idéal pour Dates et Titres propres)
+                for child in elem.iter():
+                    if child.tag.split('}')[-1] == 'VALUE' and child.text:
+                        return child.text.strip()
+                        
+                # Stratégie 2 : Chercher une sous-balise <IDENTIFIER> (Idéal pour Auteurs et Pays)
+                for child in elem.iter():
+                    if child.tag.split('}')[-1] == 'IDENTIFIER' and child.text:
+                        # Nettoyage des préfixes internes d'EUR-Lex (ex: "AG//COM" devient "COM")
+                        return child.text.replace('AG//', '').replace('CT//', '').strip()
+
+                # Stratégie 3 : Prendre le texte direct s'il y en a un
+                if elem.text and elem.text.strip():
+                    return elem.text.strip()
+                    
+    return "Non renseigné"
 
 # --- CONTRÔLES PRINCIPAUX ---
 col1, col2 = st.columns(2)
