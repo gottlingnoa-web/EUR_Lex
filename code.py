@@ -50,10 +50,10 @@ def send_soap_request(page, log_container):
             <sear:page>{page}</sear:page>
             <sear:pageSize>{rows_per_request}</sear:pageSize>
             <sear:searchLanguage>fr</sear:searchLanguage>
-            <sear:searchProfile>STANDARD</sear:searchProfile> 
         </sear:searchRequest>
    </soap:Body>
 </soap:Envelope>"""
+
 
     # L'API SOAP 1.2 exige un Content-Type 'application/soap+xml'
     headers = {
