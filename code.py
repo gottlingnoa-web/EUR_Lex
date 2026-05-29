@@ -90,9 +90,7 @@ with st.sidebar:
     colonnes_par_defaut = [
         "CELEX (Identifiant)", 
         "Titre du document", 
-        "Date du document", 
-        "Auteur (Institution)", 
-        "Pays concerné"
+        "Date du document"
     ]
     
     selected_metadata = []
