@@ -53,16 +53,27 @@ with st.sidebar:
         doc_type = st.selectbox("Type d'acte :", list(DOC_TYPES.keys()))
         annee = st.text_input("Année (ex: 2023) :", max_chars=4)
         
-        query_parts = ["DTS_SUBDOM=LEGISLATION"] 
+        query_parts = []
+        
+        # --- LE CORRECTIF EST ICI : On change de tiroir selon le type de document ---
+        if doc_type in ["Directives", "Règlements", "Décisions", "Tous les types"]:
+            query_parts.append("DTS_SUBDOM=LEGISLATION")
+            if DOC_TYPES[doc_type]: 
+                query_parts.append(f'FM_CODED={DOC_TYPES[doc_type]}')
+                
+        elif doc_type == "Mesures Nationales d'Exécution (MNE)":
+            query_parts.append("DTS_SUBDOM=MNE") # Tiroir des lois nationales
+            
+        elif doc_type == "Jurisprudence":
+            query_parts.append("DTS_SUBDOM=EU_CASE_LAW") # Tiroir des tribunaux
+            
+        # On ajoute les mots-clés et l'année s'ils sont remplis
         if txt_integral: query_parts.append(f'TE~"{txt_integral.strip()}"')
-        if DOC_TYPES[doc_type]: query_parts.append(f'FM_CODED={DOC_TYPES[doc_type]}')
         if annee: query_parts.append(f'DD_YEAR={annee}')
             
         final_query = " AND ".join(query_parts)
-        st.info(f"Requête : `{final_query}`")
-    else:
-        final_query = st.text_area("Collez votre formule :", value='DTS_SUBDOM=LEGISLATION AND FM_CODED=DIR')
-        
+        st.info(f"Requête générée : `{final_query}`")
+
     st.header("📊 Métadonnées à extraire")
     selected_metadata = st.multiselect(
         "Colonnes du futur fichier :",
