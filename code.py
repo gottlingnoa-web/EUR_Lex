@@ -96,51 +96,56 @@ if st.button("🚀 Lancer l'extraction", type="primary"):
                 break # On arrête immédiatement pour ne pas générer 100 fois la même erreur
 
             try:
-                # Parsing XML
-                root = ET.fromstring(response.content)
-                
-                # Recherche des balises de documents 
-                documents = root.findall('.//document') or root.findall('.//*[local-name()="document"]') or root.findall('.//*[local-name()="result"]')
-                
-                if not documents:
-                    log_container.warning(f"⚠️ Fin de la pagination atteinte à la page {page} ou aucun document trouvé.")
-                    break
+                if response.status_code == 200:
+                    root = ET.fromstring(response.content)
+                    
+                    # --- NOUVELLE FONCTION POUR IGNORER LES NAMESPACES ---
+                    def find_anywhere(parent_node, tag_name):
+                        """Cherche une balise peu importe son namespace"""
+                        for elem in parent_node.iter():
+                            if elem.tag == tag_name or elem.tag.endswith(f'}}[{tag_name}]') or elem.tag.endswith(f'}}{tag_name}'):
+                                return elem
+                        return None
 
-                # 💡 AJOUT CRUCIAL : Afficher la structure du premier document lors de la première requête
-                if i == 0 and len(documents) > 0:
-                    with log_container.expander("🔍 Voir le XML brut du premier document (pour trouver les bons noms de balises)"):
-                        # Convertir l'élément XML en chaîne lisible
-                        xml_str = ET.tostring(documents[0], encoding='unicode')
-                        st.code(xml_str, language='xml')
-
-                for doc in documents:
-                    # 💡 MODIFICATION : Recherche plus large incluant les standards EUR-Lex habituels
-                    # ID_CELEX est le nom standard dans l'ontologie EUR-Lex
-                    celex = doc.find('.//*[local-name()="ID_CELEX"]') 
-                    if celex is None: 
-                        celex = doc.find('.//*[local-name()="CELEX"]')
-
-                    # Le titre est souvent imbriqué dans VALUE à l'intérieur de EXPRESSION_TITLE
-                    title_node = doc.find('.//*[local-name()="EXPRESSION_TITLE"]//*[local-name()="VALUE"]')
-                    if title_node is None:
-                        title_node = doc.find('.//*[local-name()="TITLE"]')
+                    # 1. Isoler tous les documents
+                    docs = []
+                    for elem in root.iter():
+                        if elem.tag.endswith('}document') or elem.tag == 'document' or elem.tag.endswith('}result'):
+                            docs.append(elem)
+                    
+                    if not docs:
+                        log_container.info(f"✅ Extraction terminée (plus de résultats à partir de la page {page}).")
+                        break
                         
-                    # Pays ou auteur (souvent WORK_IS_CREATED_BY_AGENT)
-                    country_node = doc.find('.//*[local-name()="COUNTRY"]') 
-
-                    all_documents.append({
-                        'CELEX': celex.text if celex is not None else 'N/A',
-                        'Titre': title_node.text if title_node is not None else 'N/A',
-                        'Pays': country_node.text if country_node is not None else 'N/A'
-                    })
-
-                log_container.success(f"✅ Page {page} : documents récupérés.")
-                
-            except ET.ParseError as e:
-                log_container.error(f"⚠️ EUR-Lex n'a pas renvoyé de XML valide à la page {page}.")
-                with log_container.expander("Voir ce qu'EUR-Lex a réellement renvoyé (HTML/Erreur)"):
-                    st.code(response.text[:2000])
-                break 
+                    # 2. Extraire les métadonnées de chaque document
+                    for doc in docs:
+                        celex_node = find_anywhere(doc, "ID_CELEX") or find_anywhere(doc, "CELEX")
+                        
+                        # Cas particulier du titre souvent enfoui dans EXPRESSION_TITLE -> VALUE
+                        expr_title = find_anywhere(doc, "EXPRESSION_TITLE")
+                        if expr_title is not None:
+                            title_node = find_anywhere(expr_title, "VALUE")
+                        else:
+                            title_node = find_anywhere(doc, "TITLE")
+                            
+                        date_node = find_anywhere(doc, "DATE_DOCUMENT")
+                        
+                        all_documents.append({
+                            "CELEX (Identifiant)": celex_node.text if celex_node is not None else "",
+                            "Titre": title_node.text if title_node is not None else "",
+                            "Date": date_node.text if date_node is not None else ""
+                        })
+                        
+                    log_container.success(f"Page {page} : Récupération réussie.")
+                else:
+                    log_container.error(f"❌ Erreur Serveur HTTP {response.status_code}")
+                    with log_container.expander("Voir le détail de l'erreur"):
+                        st.code(response.text[:1000])
+                    break
+                    
+            except ET.ParseError:
+                log_container.error(f"⚠️ Erreur de lecture XML par Python à la page {page}.")
+                break
 
             progress_bar.progress((i + 1) / max_requests)
 
