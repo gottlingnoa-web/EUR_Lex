@@ -84,11 +84,25 @@ with st.sidebar:
         final_query = st.text_area("Collez votre formule experte ici :")
 
     st.header("📊 Filtres d'affichage")
-    selected_metadata = st.multiselect(
-        "Colonnes à afficher dans le Tableau / Excel (Le JSON contiendra tout) :",
-        list(METADATA_FALLBACKS.keys()),
-        default=["CELEX (Identifiant)", "Titre du document", "Date du document", "Auteur (Institution)", "Pays concerné"] 
-    )
+    st.markdown("Colonnes à afficher dans le Tableau / Excel (Le JSON contiendra tout) :")
+    
+    # On définit les colonnes qui doivent être cochées dès l'ouverture de l'application
+    colonnes_par_defaut = [
+        "CELEX (Identifiant)", 
+        "Titre du document", 
+        "Date du document", 
+        "Auteur (Institution)", 
+        "Pays concerné"
+    ]
+    
+    selected_metadata = []
+    
+    # On génère une case à cocher pour chaque métadonnée possible
+    for label in METADATA_FALLBACKS.keys():
+        # La case prend la valeur True (cochée) si elle fait partie de nos colonnes par défaut
+        coche = st.checkbox(label, value=(label in colonnes_par_defaut))
+        if coche:
+            selected_metadata.append(label)
     
     st.header("⏱️ Pagination & Limites")
     rows_per_request = st.number_input("Documents par requête", min_value=1, max_value=100, value=10)
