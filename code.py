@@ -107,7 +107,9 @@ with tab_legifrance:
                     st.success("✅ Authentification réussie !")
                     
                     # 2. Requête vers le moteur de recherche Légifrance
-                    search_url = "https://api.piste.gouv.fr/dila/legifrance/lf/engine/api/search"
+                    # CORRECTION : L'URL exacte du endpoint est lf-engine-app
+                    search_url = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search"
+                    
                     headers = {
                         "Authorization": f"Bearer {access_token}",
                         "Accept": "application/json",
