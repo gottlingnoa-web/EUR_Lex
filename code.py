@@ -428,7 +428,7 @@ with tab_el:
         parts.append(f"FM_CODED={EL_TYPES_ACTE[el_type]}")
 
     if EL_INSTITUTIONS[el_author]:
-        parts.append(f"WORK_IS_CREATED_BY_AGENT={EL_INSTITUTIONS[el_author]}")
+        parts.append(f"AU={EL_INSTITUTIONS[el_author]}")
 
     if show_country and EL_PAYS[el_country]:
         parts.append(f"NATIONAL_IMPLEMENTING_MEASURE_COUNTRY={EL_PAYS[el_country]}")
