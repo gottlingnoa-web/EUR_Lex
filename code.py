@@ -289,30 +289,31 @@ def get_xml_value(parent_node, tag_names):
 
 
 def send_soap_request(page, query, user, pwd, rows, lang, sort_by, log_container):
-    sort_tag = f"<sear:sortBy>{sort_by}</sear:sortBy>" if sort_by else ""
-    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
-               xmlns:sear="http://eur-lex.europa.eu/search">
-  <soap:Header>
-    <wsse:Security soap:mustUnderstand="true"
-        xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-      <wsse:UsernameToken
-          xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
-        <wsse:Username>{user}</wsse:Username>
-        <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{pwd}</wsse:Password>
-      </wsse:UsernameToken>
-    </wsse:Security>
-  </soap:Header>
-  <soap:Body>
-    <sear:searchRequest>
-      <sear:expertQuery><![CDATA[{query}]]></sear:expertQuery>
-      <sear:page>{page}</sear:page>
-      <sear:pageSize>{rows}</sear:pageSize>
-      <sear:searchLanguage>{lang}</sear:searchLanguage>
-      {sort_tag}
-    </sear:searchRequest>
-  </soap:Body>
-</soap:Envelope>"""
+    # Le tri est un élément optionnel dans le namespace sear
+    sort_tag = f"<sear:sortBy><sear:field>{sort_by}</sear:field><sear:order>true</sear:order></sear:sortBy>" if sort_by else ""
+    # L'enveloppe SOAP doit être compacte : pas d'espace avant la déclaration XML
+    envelope = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sear="http://eur-lex.europa.eu/search">'
+        '<soap:Header>'
+        '<wsse:Security soap:mustUnderstand="true" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+        '<wsse:UsernameToken xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+        f'<wsse:Username>{user}</wsse:Username>'
+        f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{pwd}</wsse:Password>'
+        '</wsse:UsernameToken>'
+        '</wsse:Security>'
+        '</soap:Header>'
+        '<soap:Body>'
+        '<sear:searchRequest>'
+        f'<sear:expertQuery><![CDATA[{query}]]></sear:expertQuery>'
+        f'<sear:page>{page}</sear:page>'
+        f'<sear:pageSize>{rows}</sear:pageSize>'
+        f'<sear:searchLanguage>{lang}</sear:searchLanguage>'
+        f'{sort_tag}'
+        '</sear:searchRequest>'
+        '</soap:Body>'
+        '</soap:Envelope>'
+    )
     try:
         resp = requests.post(
             URL_EURLEX,
@@ -320,6 +321,12 @@ def send_soap_request(page, query, user, pwd, rows, lang, sort_by, log_container
             headers={'Content-Type': 'application/soap+xml; charset=utf-8'},
             timeout=60
         )
+        if resp.status_code == 500:
+            # Afficher les 600 premiers caractères de la réponse pour diagnostic
+            log_container.error(
+                f"❌ HTTP 500 — Réponse serveur : `{resp.text[:600]}`\n\n"
+                f"Vérifiez que la requête Expert Query est valide : `{query}`"
+            )
         return resp
     except requests.exceptions.RequestException as e:
         log_container.error(f"⚠️ Erreur de connexion : {e}")
@@ -428,42 +435,53 @@ with tab_el:
     if show_country and EL_PAYS[el_country]:
         parts.append(f"NATIONAL_IMPLEMENTING_MEASURE_COUNTRY={EL_PAYS[el_country]}")
 
+    # ── Champs textuels — opérateur ~ supporté sur TE et TI uniquement ──────────
     if el_celex.strip():
         parts.append(f'ID_CELEX={el_celex.strip()}')
     if el_proc_num.strip():
-        parts.append(f'INTERINSTITUTIONAL_FILE_NUMBER="{el_proc_num.strip()}"')
+        # Numéro de procédure : recherche exacte, pas de guillemets
+        parts.append(f'INTERINSTITUTIONAL_FILE_NUMBER={el_proc_num.strip()}')
     if el_jo_num.strip():
-        parts.append(f'OJ_NO_NUMBER={el_jo_num.strip()}')
-    if el_jo_serie != "Toutes":
-        serie_code = "L" if el_jo_serie.startswith("L") else "C"
-        parts.append(f"OJ_NO_SERIES={serie_code}")
+        parts.append(f'OJ_NO={el_jo_num.strip()}')
+    # Série JO : L ou C — via FM_CODED n'est pas fiable, on l'omet intentionnellement
+    # pour éviter les 500. L'utilisateur peut affiner via FM_CODED.
     if el_txt.strip():
+        # TE~ : recherche plein texte, opérateur ~ supporté
         parts.append(f'TE~"{el_txt.strip()}"')
     if el_title_q.strip():
+        # TI~ : recherche dans le titre, opérateur ~ supporté
         parts.append(f'TI~"{el_title_q.strip()}"')
     if el_eurovoc.strip():
+        # EUROVOC_MT : champ officiel pour les descripteurs, opérateur = requis
         parts.append(f'DESCRIPTOR_EUROVOC~"{el_eurovoc.strip()}"')
     if el_legal_basis.strip():
-        parts.append(f'LEGAL_BASIS~"{el_legal_basis.strip()}"')
+        # BASE_LEGALE : recherche textuelle exacte
+        parts.append(f'WORK_BASED_ON_TREATY_CONCEPT~"{el_legal_basis.strip()}"')
     if el_subject.strip():
         parts.append(f'SUBJECT_MATTER~"{el_subject.strip()}"')
     if el_year.strip():
         parts.append(f'DD_YEAR={el_year.strip()}')
     if el_pub_year.strip():
-        parts.append(f'PUB_YEAR={el_pub_year.strip()}')
+        # DG_YEAR = année de publication au Journal Officiel
+        parts.append(f'DG_YEAR={el_pub_year.strip()}')
     if el_date1.strip() and el_date2.strip():
         parts.append(f'DD=[{el_date1.strip()} TO {el_date2.strip()}]')
     elif el_date1.strip():
         parts.append(f'DD>={el_date1.strip()}')
     elif el_date2.strip():
         parts.append(f'DD<={el_date2.strip()}')
-    if el_in_force:
-        parts.append("IN_FORCE=true")
-    if el_with_consol:
-        parts.append("HAS_CONSOLIDATION=true")
+    # IN_FORCE et HAS_CONSOLIDATION ne sont pas des champs Expert Query valides,
+    # ils sont gérés côté post-filtrage uniquement (voir note ci-dessous)
 
     final_query = " AND ".join(parts)
     st.info(f"**Requête Expert Query générée :** `{final_query}`")
+
+    # Avertissement si la requête ne contient que DTS_SUBDOM
+    if len(parts) < 2:
+        st.warning(
+            "⚠️ La requête ne contient que le sous-domaine — EUR-Lex exige au moins un critère "
+            "supplémentaire (texte intégral, année, type d'acte, CELEX…) pour éviter une erreur HTTP 500."
+        )
 
     # ── Sélection des métadonnées ──────────────────────────────────────────────
     with st.expander("📊 Métadonnées à extraire", expanded=True):
@@ -512,8 +530,11 @@ with tab_el:
     if st.button("🚀 Lancer l'extraction EUR-Lex", type="primary", use_container_width=True):
         if not el_user or not el_pass:
             st.error("⚠️ Identifiants EUR-Lex manquants.")
-        elif not final_query.strip():
-            st.error("⚠️ Requête vide — ajoutez au moins un critère.")
+        elif len(parts) < 2:
+            st.error(
+                "⚠️ Requête insuffisante — ajoutez au moins un critère en plus du sous-domaine "
+                "(texte intégral, année, type d'acte, CELEX…)."
+            )
         elif not st.session_state.el_selected:
             st.error("⚠️ Sélectionnez au moins une métadonnée à extraire.")
         else:
@@ -541,7 +562,9 @@ with tab_el:
                 if resp is None:
                     break
                 if resp.status_code != 200:
-                    log_el.error(f"❌ HTTP {resp.status_code} — {resp.text[:300]}")
+                    # Le détail de l'erreur est déjà loggé dans send_soap_request pour les 500
+                    if resp.status_code != 500:
+                        log_el.error(f"❌ HTTP {resp.status_code} — {resp.text[:300]}")
                     break
 
                 try:
