@@ -1,35 +1,115 @@
-#!/usr/bin/env python3
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-import threading
+import streamlit as st
 import requests
 import pandas as pd
 from xml.etree import ElementTree as ET
 import time
 import json
-import logging
-from pathlib import Path
 from datetime import datetime, timedelta
 
-# ==========================================
-# 1. LOGIQUE MÉTIER : EUR-LEX
-# ==========================================
-URL_EURLEX = "https://eur-lex.europa.eu/EURLexWebService"
-ROWS_PER_REQ = 10
-SEARCH_LANGUAGE = "fr"
+# ── CONFIGURATION STREAMLIT ────────────────────────────────────────────────────
+st.set_page_config(page_title="Extracteur Juridique", layout="wide")
+st.title("⚖️ Extracteur de données juridiques")
 
+# ── CONSTANTES EUR-LEX ─────────────────────────────────────────────────────────
+URL_EURLEX = "https://eur-lex.europa.eu/EURLexWebService"
 METADATA_MAP = {
     "CELEX (identifiant unique)": ["ID_CELEX"],
+    "N° document interne": ["WORK_ID_DOCUMENT"],
+    "N° au Journal Officiel UE": ["WORK_ID_DOCUMENT_JO"],
     "Titre complet": ["EXPRESSION_TITLE"],
+    "Titre abrégé": ["EXPRESSION_TITLE_SHORT"],
     "Type d'acte (code)": ["FM_CODED"],
     "Type de document (libellé)": ["TYPE_OF_DOCUMENT"],
+    "Institution auteur": ["WORK_IS_CREATED_BY_AGENT"],
+    "Rôle de l'auteur": ["ROLE_QUALIFIER"],
+    "Langue authentique": ["AUTHENTIC_LANGUAGE"],
+    "Langues disponibles": ["WORK_HAS_EXPRESSION"],
+    "Destinataire": ["ADDRESSEE"],
+    "État membre (MNE)": ["NATIONAL_IMPLEMENTING_MEASURE_COUNTRY"],
+    "ECLI (jurisprudence)": ["ECLI"],
+    "Collection / Série": ["WORK_PART_OF_COLLECTION"],
+    "Date du document": ["WORK_DATE_DOCUMENT"],
     "Date publication JO": ["DATE_PUBLICATION"],
-    # J'ai réduit la liste ici pour la lisibilité du code, 
-    # mais vous pouvez rajouter toute votre liste METADATA_MAP d'origine.
+    "Date entrée en vigueur": ["WORK_DATE_ENTRY_INTO_FORCE"],
+    "Date fin de validité": ["DATE_END_OF_VALIDITY"],
+    "Date transposition (DIR)": ["DATE_TRANSPOSITION"],
     "Date d'effet": ["DATE_EFFECT"],
+    "Date de signature": ["DATE_SIGNATURE"],
+    "Date de notification": ["DATE_NOTIFICATION"],
+    "Date limite (échéance)": ["DATE_DEADLINE"],
+    "Date création dans la base": ["WORK_DATE_CREATION"],
+    "Date du corrigendum": ["WORK_DATE_CORRIGENDUM"],
+    "Matière / Sujet": ["SUBJECT_MATTER"],
+    "Descripteurs Eurovoc": ["EUROVOC"],
+    "Code répertoire légis.": ["DIRECTORY_CODE"],
     "Base légale (article Traité)": ["LEGAL_BASIS"],
-    "Statut (en vigueur / abrogé)": ["STATUS_FORCE"]
+    "Base légale (code)": ["LEGAL_BASIS_CODED"],
+    "Traité de référence": ["TREATY_CODE"],
+    "Secteur": ["SECTOR"],
+    "Forme de l'acte": ["FORM_ORIG"],
+    "Statut (en vigueur / abrogé)": ["STATUS_FORCE"],
+    "Version consolidée actuelle": ["CURRENT_CONSOLIDATED_VERSION"],
+    "Lien vers consolidation": ["WORK_HAS_CONSOLIDATION"],
+    "Nombre de pages": ["NUMBER_OF_PAGES"],
+    "Juridiction (CJUE)": ["WORK_EXAMPLES_JURISDICTION"],
+    "Formation de jugement": ["CASE_LAW_FORMATION"],
+    "Issue / dispositif": ["CASE_LAW_OUTCOME"],
+    "N° procédure interinstitutionnel": ["INTERINSTITUTIONAL_FILE_NUMBER"],
+    "Type de procédure": ["PROCEDURE_TYPE"],
+    "Série JO (L / C)": ["OJ_NO_SERIES"],
+    "Numéro JO": ["OJ_NO_NUMBER"],
+    "Page début JO": ["OJ_NO_PAGE_FIRST"],
+    "Page fin JO": ["OJ_NO_PAGE_LAST"],
+    "Actes fondateurs (basé sur)": ["WORK_BASED_ON"],
+    "Actes d'exécution": ["WORK_IMPLEMENTED_BY"],
+    "Amendé par": ["WORK_AMENDED_BY"],
+    "Amende (lien amont)": ["WORK_AMENDS"],
+    "Abrogé par": ["WORK_REPEALED_BY"],
+    "Concept EuroVoc lié": ["WORK_IS_ABOUT_CONCEPT"],
+    "Cité dans affaire CJUE": ["WORK_CITED_IN_CASE"],
+    "Transposé depuis (DIR)": ["WORK_TRANSPOSES"]
 }
+
+# ── CONSTANTES LÉGIFRANCE ──────────────────────────────────────────────────────
+TOKEN_URL = "https://oauth.piste.gouv.fr/api/oauth/token"
+API_BASE = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app"
+FIELDS_TO_EXTRACT = ["cid", "id", "nor", "num", "title", "shortTitle", "nature", "fond", "signatureDate", "publicationDate", "dateDebut", "dateFin", "etat", "ministere", "autorite", "jorfPage", "jorfNum", "numParution", "texteHtml", "textePdf", "lienLegifrance", "codeAffecte", "articleAffecte", "visas", "nota", "observatoire"]
+
+# ── FONCTIONS EUR-LEX ──────────────────────────────────────────────────────────
+def soap_request_eurlex(username, password, query, search_language, page, rows_per_req):
+    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:sear="http://eur-lex.europa.eu/search">
+  <soap:Header>
+    <wsse:Security soap:mustUnderstand="true"
+        xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+      <wsse:UsernameToken xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+        <wsse:Username>{username}</wsse:Username>
+        <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{password}</wsse:Password>
+      </wsse:UsernameToken>
+    </wsse:Security>
+  </soap:Header>
+  <soap:Body>
+    <sear:searchRequest>
+      <sear:expertQuery><![CDATA[{query}]]></sear:expertQuery>
+      <sear:page>{page}</sear:page>
+      <sear:pageSize>{rows_per_req}</sear:pageSize>
+      <sear:searchLanguage>{search_language}</sear:searchLanguage>
+    </sear:searchRequest>
+  </soap:Body>
+</soap:Envelope>"""
+    try:
+        resp = requests.post(
+            URL_EURLEX,
+            data=envelope.encode("utf-8"),
+            headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            timeout=60
+        )
+        resp.raise_for_status()
+        return resp
+    except Exception as e:
+        st.error(f"Erreur réseau page {page}: {e}")
+        return None
 
 def extract_meta_eurlex(node, tags):
     for tag in tags:
@@ -48,72 +128,15 @@ def extract_meta_eurlex(node, tags):
                 if clean: return clean
     return "Non renseigné"
 
-def run_eurlex_extraction(username, password, query, max_requests, log_callback):
-    log_callback("--- Démarrage de l'extraction EUR-Lex ---")
-    all_docs = []
-    
-    for i in range(max_requests):
-        page = i + 1
-        log_callback(f"Requête {page}/{max_requests}…")
-        
-        envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sear="http://eur-lex.europa.eu/search">
-  <soap:Header>
-    <wsse:Security soap:mustUnderstand="true" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-      <wsse:UsernameToken xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
-        <wsse:Username>{username}</wsse:Username>
-        <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{password}</wsse:Password>
-      </wsse:UsernameToken>
-    </wsse:Security>
-  </soap:Header>
-  <soap:Body>
-    <sear:searchRequest>
-      <sear:expertQuery><![CDATA[{query}]]></sear:expertQuery>
-      <sear:page>{page}</sear:page>
-      <sear:pageSize>{ROWS_PER_REQ}</sear:pageSize>
-      <sear:searchLanguage>{SEARCH_LANGUAGE}</sear:searchLanguage>
-    </sear:searchRequest>
-  </soap:Body>
-</soap:Envelope>"""
+def parse_documents_eurlex(root):
+    docs = []
+    for elem in root.iter():
+        if elem.tag.split("}")[-1] in ("document", "result"):
+            row = {label: extract_meta_eurlex(elem, tags) for label, tags in METADATA_MAP.items()}
+            docs.append(row)
+    return docs
 
-        try:
-            resp = requests.post(URL_EURLEX, data=envelope.encode("utf-8"), headers={"Content-Type": "application/soap+xml; charset=utf-8"}, timeout=60)
-            resp.raise_for_status()
-            root = ET.fromstring(resp.content)
-            
-            docs = []
-            for elem in root.iter():
-                if elem.tag.split("}")[-1] in ("document", "result"):
-                    docs.append({label: extract_meta_eurlex(elem, tags) for label, tags in METADATA_MAP.items()})
-            
-            if not docs:
-                log_callback(f"Fin de pagination (Page {page}).")
-                break
-                
-            all_docs.extend(docs)
-            log_callback(f"  → {len(docs)} documents récupérés (total: {len(all_docs)})")
-            time.sleep(1)
-            
-        except Exception as e:
-            log_callback(f"ERREUR à la page {page}: {str(e)}")
-            break
-
-    if all_docs:
-        df = pd.DataFrame(all_docs)
-        df.to_csv("eurlex_resultats.csv", index=False, sep=";", encoding="utf-8-sig")
-        Path("eurlex_resultats.json").write_text(json.dumps(all_docs, ensure_ascii=False, indent=2), encoding="utf-8")
-        log_callback(f"✅ Extraction terminée ! Fichiers sauvegardés (CSV et JSON). Lignes : {len(df)}")
-    else:
-        log_callback("❌ Aucun document trouvé ou échec de la connexion.")
-
-# ==========================================
-# 2. LOGIQUE MÉTIER : LÉGIFRANCE
-# ==========================================
-TOKEN_URL = "https://oauth.piste.gouv.fr/api/oauth/token"
-API_BASE = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app"
-PAGE_SIZE = 25
-FIELDS_TO_EXTRACT = ["cid", "id", "title", "nature", "fond", "publicationDate", "etat", "ministere"] # Réduit pour l'exemple
-
+# ── CLASSE & FONCTIONS LÉGIFRANCE ──────────────────────────────────────────────
 class PisteAuth:
     def __init__(self, client_id, client_secret):
         self.client_id = client_id
@@ -121,226 +144,211 @@ class PisteAuth:
         self._token = None
         self._expires_at = datetime.min
 
-    def get_token(self, log_callback):
+    def get_token(self):
         if datetime.now() < self._expires_at:
             return self._token
-        resp = requests.post(TOKEN_URL, data={
-            "grant_type": "client_credentials",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "scope": "openid"
-        }, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        self._token = data["access_token"]
-        self._expires_at = datetime.now() + timedelta(seconds=data.get("expires_in", 3600) - 30)
-        log_callback("Token PISTE obtenu/renouvelé.")
-        return self._token
-
-def run_legifrance_extraction(client_id, client_secret, fond, champ, valeur, max_pages, log_callback):
-    log_callback("--- Démarrage de l'extraction Légifrance ---")
-    all_docs = []
-    auth = PisteAuth(client_id, client_secret)
-    
-    for page in range(1, max_pages + 1):
-        log_callback(f"Page {page}/{max_pages}…")
         try:
-            token = auth.get_token(log_callback)
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
-            
-            criteres = [{"valeur": valeur, "operateur": "ET"}] if valeur else []
-            champs = [{"typeChamp": champ, "criteres": criteres}] if criteres else [{"typeChamp": "ALL", "criteres": []}]
-            
-            payload = {
-                "recherche": {"champs": champs},
-                "fond": fond,
-                "pageNumber": page,
-                "pageSize": PAGE_SIZE,
-                "sort": "PERTINENCE"
-            }
-            
-            resp = requests.post(f"{API_BASE}/search", headers=headers, json=payload, timeout=30)
+            resp = requests.post(TOKEN_URL, data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "scope": "openid"
+            }, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            results = data.get("results", [])
-            total = data.get("totalResultNumber", 0)
-            
-            if not results:
-                log_callback(f"Fin de pagination (total API : {total}).")
-                break
-                
-            for r in results:
-                row = {}
-                for f in FIELDS_TO_EXTRACT:
-                    val = r.get(f)
-                    if isinstance(val, list): row[f] = " | ".join(str(v) for v in val)
-                    elif val is None: row[f] = "N/A"
-                    else: row[f] = str(val)
-                all_docs.append(row)
-                
-            log_callback(f"  → {len(results)} résultats (total: {len(all_docs)}/{total})")
-            if len(all_docs) >= total: break
-            time.sleep(0.5)
-            
+            self._token = data["access_token"]
+            self._expires_at = datetime.now() + timedelta(seconds=data.get("expires_in", 3600) - 30)
+            return self._token
         except Exception as e:
-            log_callback(f"ERREUR à la page {page}: {str(e)}")
-            break
+            st.error(f"Erreur d'authentification PISTE : {e}")
+            return None
 
-    if all_docs:
-        df = pd.DataFrame(all_docs)
-        df.to_csv("legifrance_resultats.csv", index=False, sep=";", encoding="utf-8-sig")
-        Path("legifrance_resultats.json").write_text(json.dumps(all_docs, ensure_ascii=False, indent=2), encoding="utf-8")
-        log_callback(f"✅ Extraction terminée ! Fichiers sauvegardés (CSV et JSON). Lignes : {len(df)}")
-    else:
-        log_callback("❌ Aucun document trouvé ou échec de la connexion.")
+    def headers(self):
+        token = self.get_token()
+        if not token: return None
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+def build_payload_legifrance(page, page_size, fond, champ, valeur, operateur, nor, num_texte, sort):
+    criteres = []
+    if valeur:
+        criteres.append({"valeur": valeur, "operateur": operateur})
+
+    champs = []
+    if criteres:
+        champs.append({"typeChamp": champ, "criteres": criteres})
+
+    if nor:
+        champs.append({"typeChamp": "NOR", "criteres": [{"valeur": nor, "operateur": "EXACTE"}]})
+    if num_texte:
+        champs.append({"typeChamp": "NUM", "criteres": [{"valeur": num_texte, "operateur": "EXACTE"}]})
+
+    payload = {
+        "recherche": {"champs": champs or [{"typeChamp": "ALL", "criteres": []}]},
+        "fond": fond,
+        "pageNumber": page,
+        "pageSize": page_size,
+        "sort": sort
+    }
+    return payload
+
+def extract_result_legifrance(res):
+    row = {}
+    for field in FIELDS_TO_EXTRACT:
+        val = res.get(field)
+        if isinstance(val, list):
+            row[field] = " | ".join(str(v) for v in val)
+        elif val is None:
+            row[field] = "N/A"
+        else:
+            row[field] = str(val)
+    return row
+
+# ── INTERFACE UTILISATEUR ──────────────────────────────────────────────────────
+tab1, tab2 = st.tabs(["🇪🇺 EUR-Lex", "🇫🇷 Légifrance"])
+
+# --- ONGLET EUR-LEX ---
+with tab1:
+    st.header("Extraction depuis EUR-Lex")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        eur_username = st.text_input("Nom d'utilisateur EUR-Lex", key="eur_user")
+        eur_password = st.text_input("Mot de passe EUR-Lex", type="password", key="eur_pass")
+    with col2:
+        eur_max_req = st.number_input("Nombre de requêtes maximum", min_value=1, max_value=100, value=5)
+        eur_rows = st.number_input("Lignes par requête", min_value=1, max_value=100, value=10)
+        eur_lang = st.selectbox("Langue de recherche", ["fr", "en", "de", "es", "it"], index=0)
+
+    eur_query = st.text_area("Requête experte", value="DTS_SUBDOM=LEGISLATION", height=100)
+
+    if st.button("Lancer l'extraction EUR-Lex", type="primary"):
+        if not eur_username or not eur_password:
+            st.warning("Veuillez renseigner vos identifiants EUR-Lex.")
+        else:
+            all_docs = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            for i in range(eur_max_req):
+                page = i + 1
+                status_text.text(f"Requête {page}/{eur_max_req} en cours...")
+                
+                resp = soap_request_eurlex(eur_username, eur_password, eur_query, eur_lang, page, eur_rows)
+                if resp is None:
+                    break
+
+                try:
+                    root = ET.fromstring(resp.content)
+                except ET.ParseError as e:
+                    st.error(f"Erreur XML page {page}: {e}")
+                    break
+
+                docs = parse_documents_eurlex(root)
+                if not docs:
+                    status_text.text(f"Fin de pagination à la page {page}.")
+                    break
+
+                all_docs.extend(docs)
+                progress_bar.progress((i + 1) / eur_max_req)
+                time.sleep(1)
+
+            if not all_docs:
+                st.warning("Aucun document trouvé ou erreur de requête.")
+            else:
+                st.success(f"Extraction terminée : {len(all_docs)} documents récupérés.")
+                df_eur = pd.DataFrame(all_docs)
+                st.dataframe(df_eur)
+
+                csv_eur = df_eur.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+                json_eur = json.dumps(all_docs, ensure_ascii=False, indent=2).encode("utf-8")
+
+                dl_col1, dl_col2 = st.columns(2)
+                dl_col1.download_button("Télécharger CSV", data=csv_eur, file_name="eurlex_resultats.csv", mime="text/csv")
+                dl_col2.download_button("Télécharger JSON", data=json_eur, file_name="eurlex_resultats.json", mime="application/json")
 
 
-# ==========================================
-# 3. INTERFACE GRAPHIQUE (TKINTER)
-# ==========================================
-class ExtractorApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Extracteurs Juridiques : EUR-Lex & Légifrance")
-        self.geometry("800x600")
-        self.configure(padx=10, pady=10)
+# --- ONGLET LÉGIFRANCE ---
+with tab2:
+    st.header("Extraction depuis Légifrance (API PISTE)")
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        lf_client_id = st.text_input("Client ID Piste", key="lf_id")
+        lf_client_secret = st.text_input("Client Secret Piste", type="password", key="lf_secret")
+    with col4:
+        lf_max_pages = st.number_input("Nombre de pages maximum", min_value=1, max_value=100, value=5)
+        lf_page_size = st.number_input("Résultats par page", min_value=10, max_value=100, value=25)
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(expand=True, fill='both')
+    st.subheader("Critères de recherche")
+    col5, col6 = st.columns(2)
+    with col5:
+        lf_fond = st.selectbox("Fonds", ["ALL", "KALI", "CNIL", "CONSTIT", "JURI", "LEGI"], index=0)
+        lf_champ = st.selectbox("Champ de recherche", ["ALL", "TITLE", "NUM"], index=0)
+        lf_valeur = st.text_input("Valeur recherchée")
+        lf_operateur = st.selectbox("Opérateur", ["ET", "OU", "EXACTE"], index=0)
+    with col6:
+        lf_nor = st.text_input("Numéro NOR (optionnel)")
+        lf_num = st.text_input("Numéro du texte (optionnel)")
+        lf_sort = st.selectbox("Tri", ["PERTINENCE", "SIGNATURE_DATE_DESC", "SIGNATURE_DATE_ASC"], index=0)
 
-        self.tab_eurlex = ttk.Frame(notebook)
-        self.tab_legifrance = ttk.Frame(notebook)
+    if st.button("Lancer l'extraction Légifrance", type="primary"):
+        if not lf_client_id or not lf_client_secret:
+            st.warning("Veuillez renseigner vos identifiants PISTE (Client ID / Secret).")
+        else:
+            auth = PisteAuth(lf_client_id, lf_client_secret)
+            headers = auth.headers()
+            
+            if headers:
+                all_docs_lf = []
+                progress_bar_lf = st.progress(0)
+                status_text_lf = st.empty()
 
-        notebook.add(self.tab_eurlex, text='🇪🇺 EUR-Lex')
-        notebook.add(self.tab_legifrance, text='🇫🇷 Légifrance')
+                for page in range(1, lf_max_pages + 1):
+                    status_text_lf.text(f"Requête page {page}/{lf_max_pages} en cours...")
+                    
+                    try:
+                        resp = requests.post(
+                            f"{API_BASE}/search",
+                            headers=headers,
+                            json=build_payload_legifrance(page, lf_page_size, lf_fond, lf_champ, lf_valeur, lf_operateur, lf_nor, lf_num, lf_sort),
+                            timeout=30
+                        )
+                        resp.raise_for_status()
+                    except Exception as e:
+                        st.error(f"Erreur API : {e}")
+                        break
 
-        self.setup_eurlex_tab()
-        self.setup_legifrance_tab()
+                    data = resp.json()
+                    results = data.get("results", [])
+                    total = data.get("totalResultNumber", 0)
 
-    # --- ONGLET EUR-LEX ---
-    def setup_eurlex_tab(self):
-        frame = ttk.Frame(self.tab_eurlex, padding=10)
-        frame.pack(fill='x')
+                    if not results:
+                        status_text_lf.text(f"Fin de pagination à la page {page} (Total API : {total}).")
+                        break
 
-        ttk.Label(frame, text="Nom d'utilisateur:").grid(row=0, column=0, sticky='w', pady=2)
-        self.eurlex_user = ttk.Entry(frame, width=40)
-        self.eurlex_user.grid(row=0, column=1, pady=2)
+                    extracted = [extract_result_legifrance(r) for r in results]
+                    all_docs_lf.extend(extracted)
+                    progress_bar_lf.progress(page / lf_max_pages)
 
-        ttk.Label(frame, text="Mot de passe:").grid(row=1, column=0, sticky='w', pady=2)
-        self.eurlex_pass = ttk.Entry(frame, width=40, show="*")
-        self.eurlex_pass.grid(row=1, column=1, pady=2)
+                    if len(all_docs_lf) >= total:
+                        break
+                    
+                    time.sleep(0.5)
 
-        ttk.Label(frame, text="Requête:").grid(row=2, column=0, sticky='w', pady=2)
-        self.eurlex_query = ttk.Entry(frame, width=40)
-        self.eurlex_query.insert(0, "DTS_SUBDOM=LEGISLATION")
-        self.eurlex_query.grid(row=2, column=1, pady=2)
+                if not all_docs_lf:
+                    st.warning("Aucun document trouvé.")
+                else:
+                    st.success(f"Extraction terminée : {len(all_docs_lf)} documents récupérés.")
+                    df_lf = pd.DataFrame(all_docs_lf)
+                    st.dataframe(df_lf)
 
-        ttk.Label(frame, text="Max requêtes (Pages):").grid(row=3, column=0, sticky='w', pady=2)
-        self.eurlex_pages = ttk.Entry(frame, width=10)
-        self.eurlex_pages.insert(0, "5")
-        self.eurlex_pages.grid(row=3, column=1, sticky='w', pady=2)
+                    csv_lf = df_lf.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+                    json_lf = json.dumps(all_docs_lf, ensure_ascii=False, indent=2).encode("utf-8")
 
-        self.btn_eurlex = ttk.Button(frame, text="▶ Lancer l'extraction", command=self.start_eurlex)
-        self.btn_eurlex.grid(row=4, column=0, columnspan=2, pady=10)
-
-        ttk.Label(self.tab_eurlex, text="Logs de l'extraction:").pack(anchor='w', padx=10)
-        self.log_eurlex = scrolledtext.ScrolledText(self.tab_eurlex, height=15, state='disabled')
-        self.log_eurlex.pack(expand=True, fill='both', padx=10, pady=5)
-
-    def write_log_eurlex(self, message):
-        self.log_eurlex.configure(state='normal')
-        self.log_eurlex.insert(tk.END, message + "\n")
-        self.log_eurlex.see(tk.END)
-        self.log_eurlex.configure(state='disabled')
-        self.update_idletasks()
-
-    def start_eurlex(self):
-        user = self.eurlex_user.get()
-        pwd = self.eurlex_pass.get()
-        query = self.eurlex_query.get()
-        try: pages = int(self.eurlex_pages.get())
-        except ValueError: pages = 5
-
-        if not user or not pwd:
-            messagebox.showwarning("Attention", "Veuillez renseigner vos identifiants EUR-Lex.")
-            return
-
-        self.btn_eurlex.config(state='disabled')
-        self.log_eurlex.configure(state='normal')
-        self.log_eurlex.delete('1.0', tk.END)
-        self.log_eurlex.configure(state='disabled')
-
-        def thread_task():
-            run_eurlex_extraction(user, pwd, query, pages, self.write_log_eurlex)
-            self.after(0, lambda: self.btn_eurlex.config(state='normal'))
-
-        threading.Thread(target=thread_task, daemon=True).start()
-
-
-    # --- ONGLET LÉGIFRANCE ---
-    def setup_legifrance_tab(self):
-        frame = ttk.Frame(self.tab_legifrance, padding=10)
-        frame.pack(fill='x')
-
-        ttk.Label(frame, text="Client ID:").grid(row=0, column=0, sticky='w', pady=2)
-        self.leg_client = ttk.Entry(frame, width=50)
-        self.leg_client.grid(row=0, column=1, pady=2)
-
-        ttk.Label(frame, text="Client Secret:").grid(row=1, column=0, sticky='w', pady=2)
-        self.leg_secret = ttk.Entry(frame, width=50, show="*")
-        self.leg_secret.grid(row=1, column=1, pady=2)
-
-        ttk.Label(frame, text="Fond:").grid(row=2, column=0, sticky='w', pady=2)
-        self.leg_fond = ttk.Combobox(frame, values=["ALL", "JURI", "LEGI", "CNIL"], state="readonly")
-        self.leg_fond.set("ALL")
-        self.leg_fond.grid(row=2, column=1, sticky='w', pady=2)
-
-        ttk.Label(frame, text="Valeur recherchée:").grid(row=3, column=0, sticky='w', pady=2)
-        self.leg_valeur = ttk.Entry(frame, width=50)
-        self.leg_valeur.grid(row=3, column=1, pady=2)
-
-        ttk.Label(frame, text="Max Pages:").grid(row=4, column=0, sticky='w', pady=2)
-        self.leg_pages = ttk.Entry(frame, width=10)
-        self.leg_pages.insert(0, "10")
-        self.leg_pages.grid(row=4, column=1, sticky='w', pady=2)
-
-        self.btn_leg = ttk.Button(frame, text="▶ Lancer l'extraction", command=self.start_legifrance)
-        self.btn_leg.grid(row=5, column=0, columnspan=2, pady=10)
-
-        ttk.Label(self.tab_legifrance, text="Logs de l'extraction:").pack(anchor='w', padx=10)
-        self.log_leg = scrolledtext.ScrolledText(self.tab_legifrance, height=15, state='disabled')
-        self.log_leg.pack(expand=True, fill='both', padx=10, pady=5)
-
-    def write_log_leg(self, message):
-        self.log_leg.configure(state='normal')
-        self.log_leg.insert(tk.END, message + "\n")
-        self.log_leg.see(tk.END)
-        self.log_leg.configure(state='disabled')
-        self.update_idletasks()
-
-    def start_legifrance(self):
-        client = self.leg_client.get()
-        secret = self.leg_secret.get()
-        fond = self.leg_fond.get()
-        valeur = self.leg_valeur.get()
-        try: pages = int(self.leg_pages.get())
-        except ValueError: pages = 10
-
-        if not client or not secret:
-            messagebox.showwarning("Attention", "Veuillez renseigner vos identifiants PISTE (Légifrance).")
-            return
-
-        self.btn_leg.config(state='disabled')
-        self.log_leg.configure(state='normal')
-        self.log_leg.delete('1.0', tk.END)
-        self.log_leg.configure(state='disabled')
-
-        def thread_task():
-            run_legifrance_extraction(client, secret, fond, "ALL", valeur, pages, self.write_log_leg)
-            self.after(0, lambda: self.btn_leg.config(state='normal'))
-
-        threading.Thread(target=thread_task, daemon=True).start()
-
-if __name__ == "__main__":
-    app = ExtractorApp()
-    app.mainloop()
+                    dl_col3, dl_col4 = st.columns(2)
+                    dl_col3.download_button("Télécharger CSV", data=csv_lf, file_name="legifrance_resultats.csv", mime="text/csv", key="dl_csv_lf")
+                    dl_col4.download_button("Télécharger JSON", data=json_lf, file_name="legifrance_resultats.json", mime="application/json", key="dl_json_lf")
