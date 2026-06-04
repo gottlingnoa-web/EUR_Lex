@@ -287,17 +287,17 @@ def get_xml_value(parent_node, tag_names):
                     return clean_text
     return "Non renseigné"
 
-
 def send_soap_request(page, query, user, pwd, rows, lang, sort_by, log_container):
-    # Le tri est un élément optionnel dans le namespace sear
-    sort_tag = f"<sear:sortBy><sear:field>{sort_by}</sear:field><sear:order>true</sear:order></sear:sortBy>" if sort_by else ""
-    # L'enveloppe SOAP doit être compacte : pas d'espace avant la déclaration XML
+    # L'API SOAP EUR-Lex ne gère pas de balise XML de tri.
+    # L'ajout de <sear:sortBy> provoque une erreur 500. Le tri par défaut est la pertinence.
+    
     envelope = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:sear="http://eur-lex.europa.eu/search">'
         '<soap:Header>'
         '<wsse:Security soap:mustUnderstand="true" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
-        '<wsse:UsernameToken xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+        # Ajout obligatoire de wsu:Id
+        '<wsse:UsernameToken wsu:Id="UsernameToken-1" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
         f'<wsse:Username>{user}</wsse:Username>'
         f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">{pwd}</wsse:Password>'
         '</wsse:UsernameToken>'
@@ -309,7 +309,6 @@ def send_soap_request(page, query, user, pwd, rows, lang, sort_by, log_container
         f'<sear:page>{page}</sear:page>'
         f'<sear:pageSize>{rows}</sear:pageSize>'
         f'<sear:searchLanguage>{lang}</sear:searchLanguage>'
-        f'{sort_tag}'
         '</sear:searchRequest>'
         '</soap:Body>'
         '</soap:Envelope>'
@@ -322,7 +321,6 @@ def send_soap_request(page, query, user, pwd, rows, lang, sort_by, log_container
             timeout=60
         )
         if resp.status_code == 500:
-            # Afficher les 600 premiers caractères de la réponse pour diagnostic
             log_container.error(
                 f"❌ HTTP 500 — Réponse serveur : `{resp.text[:600]}`\n\n"
                 f"Vérifiez que la requête Expert Query est valide : `{query}`"
